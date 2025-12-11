@@ -1,0 +1,11 @@
+devices:
+  - type: smalltv-ultra
+    host: 192.168.1.50
+
+mqtt:
+  server: 127.0.0.1
+  port: 1883
+  basetopic: gm
+  user: test
+  password: test
+  client: gm-controller

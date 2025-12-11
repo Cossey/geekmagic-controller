@@ -1,0 +1,11 @@
+devices:
+  lounge-tv:
+    type: smalltv-ultra
+
+mqtt:
+  server: 127.0.0.1
+  port: 1883
+  basetopic: gm
+  user: test
+  password: test
+  client: gm-controller
