@@ -49,6 +49,18 @@ verify:
 - `afterCommand` enables automatic verification by reading `brt.json` or `app.json` after setting values.
 - `pollIntervalSeconds` (default 30s) configures background polling to refresh device state every N seconds. On startup the controller will fetch all device state once, then start polling.
 
+### Polling behavior and published state topics
+
+On the initial connect and on every polling cycle the controller fetches the device state and republishes the retained MQTT state topics for the key values it knows about. Specifically it will publish (if present):
+
+- `<basetopic>/<device>/BRIGHTNESS` (0-100)
+- `<basetopic>/<device>/THEME` (1-7)
+- `<basetopic>/<device>/COLONBLINK` (YES/NO)
+- `<basetopic>/<device>/12HOUR` (YES/NO)
+- `<basetopic>/<device>/DST` (YES/NO)
+
+This ensures that after connecting (or while polling) the retained MQTT topics reflect the device's current state.
+
 
 
 ## MQTT Topics and usage

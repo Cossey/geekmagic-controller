@@ -389,35 +389,75 @@ export class DeviceController {
   const hour12Data = await httpClient.getJson(`http://${device.host}/hour12.json`);
   const dstData = await httpClient.getJson(`http://${device.host}/dst.json`);
       const partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number } = {};
-      if (brtData && typeof brtData === 'object') {
-        if ('brt' in brtData) partial.brt = Number((brtData as any).brt);
-        else if ('value' in brtData) partial.brt = Number((brtData as any).value);
-        else if ('brightness' in brtData) partial.brt = Number((brtData as any).brightness);
-      }
-      if (appData && typeof appData === 'object') {
-        if ('theme' in appData) partial.theme = Number((appData as any).theme);
-        else if ('app' in appData && appData.app && typeof appData.app === 'object' && 'theme' in appData.app) {
-          partial.theme = Number((appData as any).app.theme);
+      // Helper which looks up multiple possible keys and converts boolean/string forms to numbers
+      // Supports optional recursive search up to a given depth (default 0 = only top-level)
+      const parseNumericFrom = (data: any, keys: string[], depth = 0): number | undefined => {
+        if (!data || typeof data !== 'object') return undefined;
+        const tryTop = () => {
+          for (const k of keys) {
+            for (const objKey of Object.keys(data)) {
+              if (objKey.toLowerCase() === k.toLowerCase()) {
+                const v = (data as any)[objKey];
+                if (typeof v === 'number' && Number.isFinite(v)) return Number(v);
+                if (typeof v === 'boolean') return v ? 1 : 0;
+                if (typeof v === 'string') {
+                  const s = v.trim().toUpperCase();
+                  if (s === 'YES' || s === 'TRUE' || s === 'ON') return 1;
+                  if (s === 'NO' || s === 'FALSE' || s === 'OFF') return 0;
+                  const n = Number(s);
+                  if (Number.isFinite(n)) return n;
+                }
+              }
+            }
+          }
+          return undefined;
+        };
+
+        const top = tryTop();
+        if (top !== undefined) return top;
+        if (depth <= 0) return undefined;
+        for (const objKey of Object.keys(data)) {
+          try {
+            const nested = (data as any)[objKey];
+            if (nested && typeof nested === 'object') {
+              const found = parseNumericFrom(nested, keys, depth - 1);
+              if (found !== undefined) return found;
+            }
+          } catch (e) {
+            // ignore and continue
+          }
         }
+        return undefined;
+      };
+
+      // brightness
+      const brtVal = parseNumericFrom(brtData, ['brt', 'value', 'brightness']);
+      if (brtVal !== undefined) partial.brt = brtVal;
+
+      // theme: check theme or nested app.theme or other numeric keys
+      let themeVal = parseNumericFrom(appData, ['theme', 'value']);
+      if (themeVal === undefined && appData && typeof appData === 'object' && 'app' in appData && appData.app && typeof appData.app === 'object') {
+        themeVal = parseNumericFrom(appData.app, ['theme', 'value']);
       }
-      if (colonData && typeof colonData === 'object' && 'colon' in colonData) {
-        partial.colon = Number((colonData as any).colon);
-      }
-      if (hour12Data && typeof hour12Data === 'object' && 'h' in hour12Data) {
-        partial.hour12 = Number((hour12Data as any).h);
-      }
-      if (dstData && typeof dstData === 'object' && 'dst' in dstData) {
-        partial.dst = Number((dstData as any).dst);
-      }
-      // update cache and publish as needed
-  this.maybePublishState(device.name, partial);
+      if (themeVal !== undefined) partial.theme = themeVal;
+
+  // colon/hour12/dst - if missing on dedicated endpoints, search inside appData up to 2 levels
+  const colonVal = parseNumericFrom(colonData, ['colon', 'value']) ?? parseNumericFrom(appData, ['colon', 'colonblink', 'value'], 2);
+  if (colonVal !== undefined) partial.colon = colonVal;
+  const hour12Val = parseNumericFrom(hour12Data, ['h', 'hour12', 'value']) ?? parseNumericFrom(appData, ['h', 'hour12', '12hour', 'value'], 2);
+  if (hour12Val !== undefined) partial.hour12 = hour12Val;
+  const dstVal = parseNumericFrom(dstData, ['dst', 'value']) ?? parseNumericFrom(appData, ['dst', 'daylight', 'value'], 2);
+  if (dstVal !== undefined) partial.dst = dstVal;
+    // update cache and publish as needed (force publish on poll/initial load)
+  log('Loaded state for', device.name, partial);
+  this.maybePublishState(device.name, partial, true);
     } catch (err: any) {
       warn('Failed to load device state for', device.name, err?.message || err);
     }
   }
 
   // Merge the partial state into the cached state and publish to MQTT if changed (or initially set)
-  private async maybePublishState(deviceName: string, partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number }): Promise<void> {
+  private async maybePublishState(deviceName: string, partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number }, forcePublish = false): Promise<void> {
     const prev = this.deviceStates.get(deviceName);
     const next = { ...(prev || {}), ...partial };
     this.deviceStates.set(deviceName, next);
@@ -429,7 +469,7 @@ export class DeviceController {
     let changed = false;
     if (!prev) changed = true;
     else changed = partialKeys.some((k) => (partial as any)[k] !== (prev as any)[k]);
-    if (this.mqttPublisher && changed) {
+    if (this.mqttPublisher && (changed || forcePublish)) {
       try {
         await this.mqttPublisher(deviceName, partial, true);
       } catch (err: any) {

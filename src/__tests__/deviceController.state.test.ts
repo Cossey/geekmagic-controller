@@ -51,6 +51,31 @@ describe('DeviceController state load', () => {
     publishSpy.mockRestore && publishSpy.mockRestore();
   });
 
+  test('startStatePolling publishes initial state for all topics on first load', async () => {
+    const d1 = { name: 'tv1', type: 'smalltv-ultra', host: '192.168.1.50', polling: 1 };
+    const d2 = { name: 'tv2', type: 'smalltv-ultra', host: '192.168.1.51', polling: 0 };
+    const controller = new (require('../deviceController').default)([d1, d2], { pollIntervalSeconds: 30 });
+    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+    controller.setMqttPublisher(publishSpy as any);
+
+    const spyGetJson = jest.spyOn(require('../httpClient'), 'getJson').mockImplementation(async (url: any) => {
+      if (url.endsWith('/brt.json')) return { brt: 10 };
+      if (url.endsWith('/app.json')) return { theme: 2 };
+      if (url.endsWith('/colon.json')) return { colon: 1 };
+      if (url.endsWith('/hour12.json')) return { h: 1 };
+      if (url.endsWith('/dst.json')) return { dst: 0 };
+      return null;
+    });
+
+    await controller.startStatePolling();
+
+    expect(publishSpy).toHaveBeenCalledWith(d1.name, { brt: 10, theme: 2, colon: 1, hour12: 1, dst: 0 }, true);
+    expect(publishSpy).toHaveBeenCalledWith(d2.name, { brt: 10, theme: 2, colon: 1, hour12: 1, dst: 0 }, true);
+
+    controller.stopStatePolling();
+    spyGetJson.mockRestore();
+  });
+
   test('default polling uses verify.pollIntervalSeconds when device polling omitted', async () => {
     const d1 = { name: 'tv1', type: 'smalltv-ultra', host: '192.168.1.50' };
     const d2 = { name: 'tv2', type: 'smalltv-ultra', host: '192.168.1.51' };
@@ -102,6 +127,31 @@ describe('DeviceController state load', () => {
   await controller.loadDeviceState(device as any);
   expect(controller.getState(device.name)?.colon).toBe(1);
   expect(publishSpy).toHaveBeenCalledWith(device.name, expect.objectContaining({ colon: 1 }), true);
+    spy.mockRestore();
+  });
+
+  test('loadDeviceState handles alternative JSON shapes', async () => {
+    const controller = new (require('../deviceController').default)([device], {} as any);
+    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+    controller.setMqttPublisher(publishSpy as any);
+    const spy = jest.spyOn(require('../httpClient'), 'getJson').mockImplementation(async (url: any) => {
+      if (url.endsWith('/brt.json')) return { value: 55 };
+      if (url.endsWith('/app.json')) return { app: { theme: 4 } };
+      if (url.endsWith('/colon.json')) return { value: 1 };
+      if (url.endsWith('/hour12.json')) return { value: 0 };
+      if (url.endsWith('/dst.json')) return { value: 1 };
+      return null;
+    });
+
+    await controller.loadDeviceState(device as any);
+    const state = controller.getState(device.name);
+    expect(state).toBeDefined();
+    expect(state?.brt).toBe(55);
+    expect(state?.theme).toBe(4);
+    expect(state?.colon).toBe(1);
+    expect(state?.hour12).toBe(0);
+    expect(state?.dst).toBe(1);
+    expect(publishSpy).toHaveBeenCalledWith(device.name, { brt: 55, theme: 4, colon: 1, hour12: 0, dst: 1 }, true);
     spy.mockRestore();
   });
 });
