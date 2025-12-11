@@ -1,6 +1,7 @@
 import axios, { AxiosResponse } from 'axios';
 import http from 'http';
 import https from 'https';
+import FormData from 'form-data';
 import { log, warn } from './logger';
 
 // Use non-keepalive agents to avoid leaving sockets open in tests/short-lived processes
@@ -49,6 +50,28 @@ export async function postBinary(url: string, data: Buffer, contentType = 'appli
     return true;
   } catch (err: any) {
     warn('HTTP POST failed', err?.message || err);
+    return false;
+  }
+}
+
+export async function postForm(url: string, fieldName: string, buffer: Buffer, filename: string, contentType = 'application/octet-stream'): Promise<boolean> {
+  try {
+    const form = new FormData();
+    form.append(fieldName, buffer, { filename, contentType });
+    const headers = form.getHeaders();
+    log('HTTP POST FORM', url, 'file', filename);
+    const res = await client.request({
+      url,
+      method: 'POST',
+      data: form,
+      headers: { ...headers },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+    log('HTTP POST FORM OK', res.status);
+    return true;
+  } catch (err: any) {
+    warn('HTTP POST FORM failed', err?.message || err);
     return false;
   }
 }

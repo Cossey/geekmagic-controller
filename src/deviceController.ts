@@ -11,7 +11,8 @@ export class DeviceController {
   devicePollTimers: Map<string, NodeJS.Timeout> = new Map();
   mqttPublisher?: MqttPublishFn;
   // Optional override hook used by tests to intercept image uploads.
-  imageUploader?: (device: Device, buf: Buffer) => Promise<boolean>;
+  // signature: device, buffer, filename, contentType
+  imageUploader?: (device: Device, buf: Buffer, filename: string, contentType: string) => Promise<boolean>;
   // Optional override for HTTP GET requests (used in tests for image flow)
   sendGetFn?: (url: string) => Promise<any>;
 
@@ -235,9 +236,11 @@ export class DeviceController {
   async processImageAndUpload(device: Device, payload: string): Promise<boolean> {
     // Decode payload: support data URI (data:<mime>;base64,...) or raw base64
     let buffer: Buffer;
+    let dataUriMime: string | undefined;
     try {
       const m = String(payload || '').match(/^data:([^;]+);base64,(.*)$/i);
       if (m) {
+        dataUriMime = m[1].toLowerCase();
         buffer = Buffer.from(m[2], 'base64');
       } else {
         // Try plain base64
@@ -249,6 +252,14 @@ export class DeviceController {
     }
 
     try {
+      // Determine original MIME type. Prefer sniffing the buffer (magic bytes) over a declared data URI mime
+      let origMime: string | undefined = dataUriMime;
+      const s = buffer.slice(0, 8);
+      const sig = s.toString('ascii', 0, 6);
+      if (sig.startsWith('GIF')) origMime = 'image/gif';
+      else if (s[0] === 0xff && s[1] === 0xd8) origMime = 'image/jpeg';
+      else if (s[0] === 0x89 && s[1] === 0x50 && s[2] === 0x4e && s[3] === 0x47) origMime = 'image/png';
+
       const img = await Jimp.read(buffer);
       const cfg = device.image || {};
       const oversize = cfg.oversize || 'resize';
@@ -258,57 +269,72 @@ export class DeviceController {
       const w = img.getWidth();
       const h = img.getHeight();
 
-      if (oversize === 'crop' && (w > finalSize || h > finalSize)) {
-        // compute left/top based on cropposition
-        let left = 0;
-        let top = 0;
-        const horizontalCenter = Math.max(0, Math.floor((w - finalSize) / 2));
-        const verticalCenter = Math.max(0, Math.floor((h - finalSize) / 2));
-        switch (cropposition.toLowerCase()) {
-          case 'topleft':
-            left = 0; top = 0; break;
-          case 'topright':
-            left = Math.max(0, w - finalSize); top = 0; break;
-          case 'bottomleft':
-            left = 0; top = Math.max(0, h - finalSize); break;
-          case 'bottomright':
-            left = Math.max(0, w - finalSize); top = Math.max(0, h - finalSize); break;
-          case 'top':
-            left = horizontalCenter; top = 0; break;
-          case 'bottom':
-            left = horizontalCenter; top = Math.max(0, h - finalSize); break;
-          case 'left':
-            left = 0; top = verticalCenter; break;
-          case 'right':
-            left = Math.max(0, w - finalSize); top = verticalCenter; break;
-          default:
-            left = horizontalCenter; top = verticalCenter; break;
-        }
-        // Ensure we can crop desired area; fallback to resize if image is smaller
-        if (w >= finalSize && h >= finalSize) {
-          img.crop(left, top, finalSize, finalSize);
+      let finalBuffer: Buffer;
+      let finalExt = 'jpg';
+      let finalMime = 'image/jpeg';
+
+      // If original was GIF and already the right size, keep it as GIF and upload as-is
+      if (origMime === 'image/gif' && w === finalSize && h === finalSize) {
+        finalBuffer = buffer;
+        finalExt = 'gif';
+        finalMime = 'image/gif';
+      } else {
+        // process image via Jimp and output JPEG
+        if (oversize === 'crop' && (w > finalSize || h > finalSize)) {
+          // compute left/top based on cropposition
+          let left = 0;
+          let top = 0;
+          const horizontalCenter = Math.max(0, Math.floor((w - finalSize) / 2));
+          const verticalCenter = Math.max(0, Math.floor((h - finalSize) / 2));
+          switch (cropposition.toLowerCase()) {
+            case 'topleft':
+              left = 0; top = 0; break;
+            case 'topright':
+              left = Math.max(0, w - finalSize); top = 0; break;
+            case 'bottomleft':
+              left = 0; top = Math.max(0, h - finalSize); break;
+            case 'bottomright':
+              left = Math.max(0, w - finalSize); top = Math.max(0, h - finalSize); break;
+            case 'top':
+              left = horizontalCenter; top = 0; break;
+            case 'bottom':
+              left = horizontalCenter; top = Math.max(0, h - finalSize); break;
+            case 'left':
+              left = 0; top = verticalCenter; break;
+            case 'right':
+              left = Math.max(0, w - finalSize); top = verticalCenter; break;
+            default:
+              left = horizontalCenter; top = verticalCenter; break;
+          }
+          // Ensure we can crop desired area; fallback to contain if image is smaller
+          if (w >= finalSize && h >= finalSize) {
+            img.crop(left, top, finalSize, finalSize);
+          } else {
+            img.contain(finalSize, finalSize, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE);
+          }
         } else {
           img.contain(finalSize, finalSize, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE);
         }
-      } else {
-        // Resize to 240x240 preserving aspect ratio and pad background where needed
-        img.contain(finalSize, finalSize, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE);
+
+        // Ensure exact 240x240
+        if (img.getWidth() !== finalSize || img.getHeight() !== finalSize) img.resize(finalSize, finalSize);
+
+        finalBuffer = await img.getBufferAsync(Jimp.MIME_JPEG);
+        finalExt = 'jpg';
+        finalMime = 'image/jpeg';
       }
 
-      // Ensure output is exactly 240x240
-      if (img.getWidth() !== finalSize || img.getHeight() !== finalSize) {
-        img.resize(finalSize, finalSize);
-      }
+      const uploadUrl = `http://${device.host}/doUpload?dir=/image/`;
+      const filename = `upload.${finalExt}`;
+      const uploadOk = this.imageUploader ? await this.imageUploader(device, finalBuffer, filename, finalMime) : await httpClient.postForm(uploadUrl, 'image', finalBuffer, filename, finalMime);
+      if (!uploadOk) return false;
 
-      const outBuffer = await img.getBufferAsync(Jimp.MIME_PNG);
-
-      const uploadUrl = `http://${device.host}/upload`;
-  const uploadOk = this.imageUploader ? await this.imageUploader(device, outBuffer) : await httpClient.postBinary(uploadUrl, outBuffer, 'image/png');
-  if (!uploadOk) return false;
-
-  // set theme to 3 (allow tests to override sendGet via sendGetFn)
-  const sendGetToUse = this.sendGetFn ?? httpClient.sendGet;
-  await sendGetToUse(`http://${device.host}/set?theme=3`);
+      // set theme to 3 (allow tests to override sendGet via sendGetFn)
+      const sendGetToUse = this.sendGetFn ?? httpClient.sendGet;
+      await sendGetToUse(`http://${device.host}/set?theme=3`);
+      // select the uploaded image
+      const encodedPath = encodeURIComponent(`/image//upload.${finalExt}`);
+      await sendGetToUse(`http://${device.host}/set?img=${encodedPath}`);
 
       // Publish theme or verify
       if (this.verifyOptions?.afterCommand) {

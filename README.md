@@ -88,6 +88,18 @@ IMAGE uploads
 - If the incoming image is larger than 240x240, the per-device image config (see below) controls whether the image is cropped or resized.
 - After a successful upload the controller will set `THEME` to `3` on the device automatically.
 
+Supported upload formats and behavior
+
+- The device accepts JPG/JPEG and GIF uploads. If an input image is not in a supported format (for example, PNG), the controller will convert it to JPG before uploading.
+- If the input is a GIF and is already exactly 240x240, the controller will upload it as a GIF and preserve the GIF (no conversion). If the GIF is not the right size it will be converted to JPG.
+- Upload endpoint: the controller uploads images via multipart/form-data to `http://<device.host>/doUpload?dir=/image/` using a single form field named `image`.
+- The uploaded filename is always `upload.<ext>` (for example `upload.jpg` or `upload.gif`) so that the device can overwrite the same file each time and conserve storage.
+- After setting the theme to `3` the controller also instructs the device to select the uploaded file by calling:
+
+  `http://<device.host>/set?img=%2Fimage%2F%2Fupload.<ext>`
+
+  where `<ext>` is the actual file extension used (jpg or gif).
+
 Device image configuration (per-device)
 
 Add an `image` block under each device in `config.yaml` to control oversize behaviour and crop position. Example:
