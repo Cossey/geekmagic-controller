@@ -71,7 +71,17 @@ export async function postForm(url: string, fieldName: string, buffer: Buffer, f
     log('HTTP POST FORM OK', res.status);
     return true;
   } catch (err: any) {
-    warn('HTTP POST FORM failed', err?.message || err);
+    const msg = String(err?.message || err || '');
+    const body = String(err?.response?.data || '');
+    // Some device firmwares return an annoying "Duplicate Content-Length" (with or without
+    // hyphen) or Node error code 'ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_LENGTH' even though the
+    // upload actually succeeds. Treat those cases as success but warn for diagnostics.
+    const dupRe = /duplicate.*content[- ]?length/i;
+    if (dupRe.test(msg) || dupRe.test(body) || err?.code === 'ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_LENGTH' || String(err?.message || '').includes('ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_LENGTH')) {
+      warn('HTTP POST FORM duplicate/multiple content-length - treating as success', msg || String(err));
+      return true;
+    }
+    warn('HTTP POST FORM failed', msg);
     return false;
   }
 }

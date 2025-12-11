@@ -27,7 +27,8 @@ export class MqttService {
       log('MQTT connected');
   // Only subscribe to item-level SET and COMMAND subtopics to avoid interpreting state topics as commands.
   // Use one device and item level: <basetopic>/<device>/<item>/SET
-  const topics = [`${this.cfg.basetopic}/+/+/SET`, `${this.cfg.basetopic}/+/COMMAND`];
+  // Also subscribe to IMAGE/GENERATE which is a command-style topic (no /SET suffix)
+  const topics = [`${this.cfg.basetopic}/+/+/SET`, `${this.cfg.basetopic}/+/COMMAND`, `${this.cfg.basetopic}/+/IMAGE/GENERATE`];
       log('Subscribing to topics', topics.join(', '));
       this.client?.subscribe(topics, (err?: Error, granted?: mqtt.ISubscriptionGrant[]) => {
         if (err) {
@@ -96,6 +97,22 @@ export class MqttService {
         payloadVal = payloadRaw.trim();
       }
       await this.controller.handleCommand(device, item, payloadVal);
+      return;
+    }
+
+    // Special IMAGE/GENERATE topic: gm/<device>/IMAGE/GENERATE
+    if (parts.length >= 4 && parts[2].toUpperCase() === 'IMAGE' && parts[3].toUpperCase() === 'GENERATE') {
+      log('MQTT received IMAGE/GENERATE', { topic, device, payload: payloadRaw });
+      // payload can be JSON or plain text
+      let payloadVal: any = undefined;
+      try {
+        payloadVal = JSON.parse(payloadRaw);
+      } catch (_) {
+        payloadVal = String(payloadRaw).trim();
+      }
+      // Call controller to generate and upload image
+      // Do not await to avoid blocking the mqtt message loop
+      this.controller.generateAndUploadImage(device, payloadVal).catch((err) => warn('IMAGE/GENERATE failed', err?.message || err));
       return;
     }
 

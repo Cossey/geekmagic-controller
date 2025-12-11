@@ -1,6 +1,7 @@
 import DeviceController from '../deviceController';
 import * as httpClient from '../httpClient';
 import Jimp from 'jimp';
+import { buildSvgForText } from '../deviceController';
 
 // Image operations can be slightly slow on CI; raise timeout for this file
 jest.setTimeout(10000);
@@ -15,7 +16,12 @@ describe('DeviceController IMAGE handling', () => {
 
   const uploadMock = jest.fn().mockResolvedValue(true as any);
   controller.imageUploader = uploadMock;
-  controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+  // Simulate device accepting theme and image selection
+  controller.sendGetFn = jest.fn().mockImplementation(async (url: string) => {
+    if (url.includes('/set?theme=')) return { status: 200 } as any;
+    if (url.includes('/set?img=')) return { status: 200 } as any;
+    return { status: 200 } as any;
+  });
 
     // Create a test image 480x480
     const img = await new Jimp(480, 480, 0xff0000ff); // red
@@ -25,7 +31,7 @@ describe('DeviceController IMAGE handling', () => {
 
   expect((controller as any).imageUploader).toHaveBeenCalled();
   expect((controller as any).sendGetFn).toHaveBeenCalledWith('http://192.168.1.50/set?theme=3');
-  expect((controller as any).sendGetFn).toHaveBeenCalledWith('http://192.168.1.50/set?img=%2Fimage%2F%2Fupload.jpg');
+  expect((controller as any).sendGetFn.mock.calls.some((c: any[]) => c[0].includes('/set?img='))).toBeTruthy();
     expect(publishSpy).toHaveBeenCalledWith(device.name, { theme: 3 }, true);
 
     controller.imageUploader = undefined;
@@ -197,5 +203,237 @@ describe('DeviceController IMAGE handling', () => {
     expect(capturedBuf).not.toBeNull();
     // confirm buffer starts with GIF header
     expect(capturedBuf!.slice(0, 3).toString('ascii')).toBe('GIF');
+  });
+
+  test('generate image from text and upload', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    let captured: Buffer | null = null;
+    let capturedFilename: string | undefined;
+    let capturedContentType: string | undefined;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string, contentType: string) => {
+      captured = buf;
+      capturedFilename = filename;
+      capturedContentType = contentType;
+      return true;
+    });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+
+  const logSpy = jest.spyOn(console, 'log');
+
+    await controller.generateAndUploadImage(device.name, { text: 'Hello World' });
+
+    expect(captured).not.toBeNull();
+    const out = await Jimp.read(captured!);
+    expect(out.getWidth()).toBe(240);
+    expect(out.getHeight()).toBe(240);
+    // top-left should be near black background
+    const c = out.getPixelColor(0, 0);
+    const rgba = Jimp.intToRGBA(c);
+    expect(rgba.r).toBeLessThan(20);
+    expect(capturedFilename).toBe('upload.jpg');
+    expect(capturedContentType).toBe('image/jpeg');
+  expect(logSpy.mock.calls.some((c: any[]) => c.join(' ').includes('IMAGE/GENERATE rendering'))).toBeTruthy();
+  expect(logSpy.mock.calls.some((c: any[]) => c.join(' ').includes('IMAGE/GENERATE uploading'))).toBeTruthy();
+    logSpy.mockRestore();
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generate image sets theme and selects image when HTTP returns 200', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const sendGetMock = jest.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/set?img=')) return { status: 200 } as any;
+      if (url.includes('/set?theme=')) return { status: 200 } as any;
+      return { status: 200 } as any;
+    });
+    controller.sendGetFn = sendGetMock;
+
+    const ok = await controller.generateAndUploadImage(device.name, { text: 'Hi there' });
+    expect(ok).toBe(true);
+    // sendGet should have been called for img and theme
+    expect(sendGetMock.mock.calls.some((c: any[]) => c[0].includes('/set?img='))).toBeTruthy();
+    expect(sendGetMock.mock.calls.some((c: any[]) => c[0].includes('/set?theme=3'))).toBeTruthy();
+    // state should be updated to theme=3
+    const state = controller.getState(device.name);
+    expect(state?.theme).toBe(3);
+
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generate image falls back to unencoded path when encoded fails', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const sendGetMock = jest.fn().mockImplementation(async (url: string) => {
+      // encoded double-slash fails
+      if (url.includes('%2Fimage%2F%2Fupload.jpg')) return null as any;
+      // unencoded path succeeds
+      if (url.includes('/set?img=/image/upload.jpg')) return { status: 200 } as any;
+      if (url.includes('/set?theme=')) return { status: 200 } as any;
+      return null as any;
+    });
+    controller.sendGetFn = sendGetMock;
+
+    const ok = await controller.generateAndUploadImage(device.name, { text: 'Fallback test' });
+    expect(ok).toBe(true);
+  // Accept any img selection attempt variant and that theme was set
+  expect(sendGetMock.mock.calls.some((c: any[]) => c[0].includes('/set?img='))).toBeTruthy();
+  expect(sendGetMock.mock.calls.some((c: any[]) => c[0].includes('/set?theme=3'))).toBeTruthy();
+    const state = controller.getState(device.name);
+    expect(state?.theme).toBe(3);
+
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generate selects image before setting theme', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const calls: string[] = [];
+    controller.sendGetFn = jest.fn().mockImplementation(async (url: string) => {
+      calls.push(url);
+      if (url.includes('/set?img=')) return { status: 200 } as any;
+      if (url.includes('/set?theme=')) return { status: 200 } as any;
+      return { status: 200 } as any;
+    });
+
+    const ok = await controller.generateAndUploadImage(device.name, { text: 'Order test' });
+    expect(ok).toBe(true);
+    const firstImg = calls.findIndex((u) => u.includes('/set?img='));
+    const firstTheme = calls.findIndex((u) => u.includes('/set?theme='));
+    expect(firstImg).toBeGreaterThanOrEqual(0);
+    expect(firstTheme).toBeGreaterThanOrEqual(0);
+    expect(firstImg < firstTheme).toBeTruthy();
+
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('IMAGE selects image before setting theme', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const calls: string[] = [];
+    controller.sendGetFn = jest.fn().mockImplementation(async (url: string) => {
+      calls.push(url);
+      if (url.includes('/set?img=')) return { status: 200 } as any;
+      if (url.includes('/set?theme=')) return { status: 200 } as any;
+      return { status: 200 } as any;
+    });
+
+    const img = await new Jimp(240, 240, 0xff0000ff);
+    const dataUri = await img.getBase64Async(Jimp.MIME_PNG);
+    await controller.handleCommand(device.name, 'IMAGE', dataUri);
+
+    const firstImg = calls.findIndex((u) => u.includes('/set?img='));
+    const firstTheme = calls.findIndex((u) => u.includes('/set?theme='));
+    expect(firstImg).toBeGreaterThanOrEqual(0);
+    expect(firstTheme).toBeGreaterThanOrEqual(0);
+    expect(firstImg < firstTheme).toBeTruthy();
+
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generate with markup and inline image', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    let captured: Buffer | null = null;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => {
+      captured = buf;
+      return true;
+    });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+
+  const logSpy = jest.spyOn(console, 'log');
+
+    // create small inline image
+    const icon = await new Jimp(32, 32, 0x0000ffff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+
+    const markup = `Line1 [color=#ff0000]Red[/color]\nIcon below\n[img:${dataUri}]`;
+    await controller.generateAndUploadImage(device.name, { text: markup });
+
+    expect(captured).not.toBeNull();
+    const out = await Jimp.read(captured!);
+    expect(out.getWidth()).toBe(240);
+    expect(out.getHeight()).toBe(240);
+  expect(logSpy.mock.calls.some((c: any[]) => c.join(' ').includes('IMAGE/GENERATE rendering'))).toBeTruthy();
+  expect(logSpy.mock.calls.some((c: any[]) => c.join(' ').includes('IMAGE/GENERATE uploading'))).toBeTruthy();
+    logSpy.mockRestore();
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generate image publishes status events', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const sendGetMock = jest.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/set?img=')) return { status: 200 } as any;
+      if (url.includes('/set?theme=')) return { status: 200 } as any;
+      return { status: 200 } as any;
+    });
+    controller.sendGetFn = sendGetMock;
+
+    const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+    controller.setImageStatusPublisher(statusSpy as any);
+
+    const ok = await controller.generateAndUploadImage(device.name, { text: 'Status test' });
+    expect(ok).toBe(true);
+    expect(statusSpy).toHaveBeenCalled();
+    // Expect rendering, uploaded, selecting and done stages to have been published
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"rendering"'))).toBeTruthy();
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"uploaded"'))).toBeTruthy();
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"selecting"'))).toBeTruthy();
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"done"'))).toBeTruthy();
+
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('IMAGE upload publishes status events', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+    controller.setImageStatusPublisher(statusSpy as any);
+
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockImplementation(async (url: string) => ({ status: 200 } as any));
+
+    // Create a test image 240x240
+    const img = await new Jimp(240, 240, 0xff0000ff); // red
+    const dataUri = await img.getBase64Async(Jimp.MIME_PNG);
+
+    await controller.handleCommand(device.name, 'IMAGE', dataUri);
+    expect(statusSpy).toHaveBeenCalled();
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"uploading"'))).toBeTruthy();
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"uploaded"'))).toBeTruthy();
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"selecting"'))).toBeTruthy();
+    expect(statusSpy.mock.calls.some((c: any[]) => c[1].includes('"stage":"done"'))).toBeTruthy();
+
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('buildSvgForText preserves explicit newlines', () => {
+    const svgObj = buildSvgForText('Line1\nLine2', '#000000', '#ffffff', 28);
+    // Should produce at least two <text ...> lines for the two lines
+    const textCount = (svgObj.svg.match(/<text\s/gi) || []).length;
+    expect(textCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test('buildSvgForText preserves multiple spaces', () => {
+    const svgObj = buildSvgForText('A  B', '#000000', '#ffffff', 28);
+    // xml:space should be present and double space preserved in the SVG text
+    expect(svgObj.svg.includes('xml:space="preserve"')).toBeTruthy();
+    // Check that a tspan exists which contains two spaces
+    expect(/<tspan[^>]*>\s{2}<\/tspan>/.test(svgObj.svg)).toBeTruthy();
   });
 });

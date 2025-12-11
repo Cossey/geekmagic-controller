@@ -3,6 +3,7 @@
 Lightweight MQTT-to-HTTP bridge for `smalltv-ultra` devices. Loads YAML configuration, subscribes to an MQTT broker, and forwards certain device commands as HTTP GET requests.
 
 Quick start:
+
 - Install dependencies: `npm install`
 - Run in development: `npm run dev -- config.yaml`
 - Build: `npm run build` and run: `npm run start`
@@ -82,11 +83,7 @@ The controller supports two patterns for sending commands:
 
 
 
- - `<basetopic>/<deviceName>/BRIGHTNESS` – value is 0-100
- - `<basetopic>/<deviceName>/THEME` – value is 1-7
- - `<basetopic>/<deviceName>/COLONBLINK` – value is YES/NO (device value 1/0)
- - `<basetopic>/<deviceName>/12HOUR` – value is YES/NO (device value 1/0)
- - `<basetopic>/<deviceName>/DST` – value is YES/NO (device value 1/0)
+
 
 For boolean flags (COLONBLINK, 12HOUR, DST):
 
@@ -128,6 +125,72 @@ devices:
 ```
 
 When `oversize: crop` the controller will extract a 240x240 section from the incoming image based on `cropposition` (for example `topright` will select the 240x240 square from the top-right corner). When `oversize: resize` the controller will scale the image to fit within a 240x240 box and pad as needed to produce an exact 240x240 final image.
+
+Note on device upload quirks:
+
+- Some device firmwares return an HTTP error message like "Duplicate content length" even though the upload actually succeeds. The controller treats that specific error as a successful upload and proceeds to select the image and set the theme.
+
+Compatibility note for selecting uploaded images
+
+- The controller tries multiple variants when instructing the device to select the uploaded image (for example encoded vs unencoded paths, `/image//upload.jpg` vs `/image/upload.jpg`, etc). By default the controller now attempts to select the image first and then set `THEME=3` (this order works better on most devices). If that doesn't succeed it falls back to trying `THEME=3` first then selecting the image. If needed you can tune the small delays and retry counts per-device using the `image.selection*` options shown above.
+
+### IMAGE/GENERATE — generate images from text/markup
+
+You can programmatically generate a 240×240 image and upload it to the device by publishing to the topic:
+
+```text
+<basetopic>/<deviceName>/IMAGE/GENERATE
+```
+
+Payloads supported:
+
+- Plain string: treated as the text to render.
+- JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28 }` (all fields optional)
+
+Markup supported in the `text` string:
+
+- `[color=#rrggbb]...[/color]` — set a hex color for the enclosed text (eg. `#ff0000`).
+- `[b]...[/b]` — bold text.
+- `[i]...[/i]` — italic text.
+- `[img:data-uri]` — inline image using a data URI (for example `data:image/png;base64,...`). Inline images are centered and rendered at ~96×96.
+- Use `\n` (or real line breaks in JSON strings) to create new lines.
+
+- Multiple spaces are preserved in generated text (the renderer sets xml:space="preserve" so `A  B` keeps two spaces).
+
+Behavior and defaults:
+
+- Final image is rendered to 240×240 pixels and uploaded as `upload.jpg` to `http://<device>/doUpload?dir=/image/`.
+- The controller sets the device `THEME` to `3` and issues a `set?img=...` to select the uploaded image.
+- Default background: `#000000` (black). Default text color: `#ffffff` (white). Default font size: `28` (the renderer will shrink the font to fit if necessary down to a small minimum).
+- Only a simple markup language is supported (no HTML/CSS); nesting is supported in simple cases (bold/italic inside color blocks), but complex nesting or layout is not guaranteed.
+
+Progress/status via MQTT:
+
+- While generating, uploading, and selecting images the controller publishes status updates to the retained topic:
+
+  ```text
+  <basetopic>/<deviceName>/IMAGE/STATUS
+  ```
+
+  Each message is a small JSON string containing a `stage` field. Common stages emitted are `rendering`, `uploading`, `uploaded`, `selecting`, `done`, and `error`. The `done` payload will include `themeOk` and `imgSelected` booleans and may include `themeUrl` and `imgUrl` (the exact `set` URLs that succeeded) to aid remote debugging.
+
+Examples (Unix shell):
+
+```bash
+mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m 'Hello World'
+
+mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Line1\n[color=#ff0000][b]Red[/b][/color]" , "background":"#000000", "textColor":"#ffffff", "fontSize":28}'
+```
+
+Examples (PowerShell):
+
+```powershell
+mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Line1\n[img:data:image/png;base64,....]"}'
+```
+
+Tip: if sending large data URIs inside MQTT messages, consider using a JSON payload and single-quoting the whole message on shells that support it so you don't need to escape inner double quotes.
+
+See `src/deviceController.ts` → `generateAndUploadImage` for the exact implementation details if you need to understand parsing/limitations.
 
 State topics are read-only. Sending commands is only supported on the SET subtopic, e.g. `gm/<device>/BRIGHTNESS/SET` or `gm/<device>/THEME/SET`.
 
@@ -199,5 +262,7 @@ secrets:
 Note: `MQTT_PASSWORD_FILE` is preferred for security reasons since the file contents are not visible in process environment or Docker inspect output.
 
 
+ 
 ## AI Assistance
+
 Vibe coded by Raptor mini (Preview), with human "assistance".

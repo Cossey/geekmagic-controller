@@ -5,12 +5,176 @@ import Jimp from 'jimp';
 import sharp from 'sharp';
 import { log, warn } from './logger';
 
+// Build a 240x240 SVG from the markup text. This is exported so tests can assert layout
+export function buildSvgForText(text: string, bg: string, defaultTextColor: string, fontSize: number) {
+  // parse blocks and markup (images, color, bold, italic). This mirrors the code used by
+  // generateAndUploadImage but is separated out for testability and clearer newline handling.
+  const imgTagRe = /\[img:([^\]]+)\]/gi;
+  const blocks: Array<{ type: 'text' | 'image'; text?: string; src?: string }> = [];
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = imgTagRe.exec(text)) !== null) {
+    const idx = m.index;
+    if (idx > cursor) blocks.push({ type: 'text', text: text.slice(cursor, idx) });
+    blocks.push({ type: 'image', src: m[1] });
+    cursor = idx + m[0].length;
+  }
+  if (cursor < text.length) blocks.push({ type: 'text', text: text.slice(cursor) });
+
+  const parseBoldItalic = (s: string, color: string) => {
+    const spans: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
+    const bRe = /\[b\]([\s\S]*?)\[\/b\]/gi;
+    let pos = 0;
+    let mm: RegExpExecArray | null;
+    while ((mm = bRe.exec(s)) !== null) {
+      const i = mm.index;
+      if (i > pos) spans.push({ text: s.slice(pos, i), color });
+      spans.push({ text: mm[1], color, bold: true });
+      pos = i + mm[0].length;
+    }
+    if (pos < s.length) spans.push({ text: s.slice(pos), color });
+    const final: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
+    for (const sp of spans) {
+      const s2 = sp.text;
+      const iRe = /\[i\]([\s\S]*?)\[\/i\]/gi;
+      let p = 0;
+      let mm2: RegExpExecArray | null;
+      while ((mm2 = iRe.exec(s2)) !== null) {
+        const ii = mm2.index;
+        if (ii > p) final.push({ text: s2.slice(p, ii), color: sp.color, bold: sp.bold });
+        final.push({ text: mm2[1], color: sp.color, bold: sp.bold, italic: true });
+        p = ii + mm2[0].length;
+      }
+      if (p < s2.length) final.push({ text: s2.slice(p), color: sp.color, bold: sp.bold });
+    }
+    return final;
+  };
+
+  const parseStyledSpans = (s: string, baseColor: string) => {
+    const spans: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
+    const colorRe = /\[color=([^\]]+)\]([\s\S]*?)\[\/color\]/gi;
+    let pos = 0;
+    let mm: RegExpExecArray | null;
+    while ((mm = colorRe.exec(s)) !== null) {
+      const i = mm.index;
+      if (i > pos) {
+        const before = s.slice(pos, i);
+        spans.push(...parseBoldItalic(before, baseColor));
+      }
+      const col = mm[1];
+      spans.push(...parseBoldItalic(mm[2], col));
+      pos = i + mm[0].length;
+    }
+    if (pos < s.length) spans.push(...parseBoldItalic(s.slice(pos), baseColor));
+    return spans;
+  };
+
+  // Layout: assemble lines and images into vertical flow, centering each element
+  const SVG_WIDTH = 240;
+  const SVG_HEIGHT = 240;
+  let currentFontSize = fontSize;
+
+  // Function to build layout and compute total height (supports forced newlines inside spans)
+  const buildLayout = (fSize: number) => {
+    const lines: Array<{ type: 'text'; spans: any[] } | { type: 'image'; src: string } > = [];
+    const maxTextWidth = SVG_WIDTH - 8; // margin 4px each side
+    const charWidth = fSize * 0.6;
+
+    for (const blk of blocks) {
+      if (blk.type === 'image') {
+        lines.push({ type: 'image', src: blk.src! });
+        continue;
+      }
+      const spans = parseStyledSpans(blk.text || '', defaultTextColor);
+      let curLine: Array<any> = [];
+      let curWidth = 0;
+      for (const sp of spans) {
+        // Respect explicit newlines inside spans: split on \n and force line breaks
+        const segments = sp.text.split('\n');
+        for (let si = 0; si < segments.length; si++) {
+          const seg = segments[si];
+          const words = seg.split(/(\s+)/);
+          for (const w of words) {
+            const wLen = w.length * charWidth;
+            if (curWidth + wLen > maxTextWidth && curLine.length > 0) {
+              lines.push({ type: 'text', spans: curLine });
+              curLine = [];
+              curWidth = 0;
+            }
+            if (w.length > 0) {
+              curLine.push({ text: w, color: sp.color, bold: sp.bold, italic: sp.italic });
+              curWidth += wLen;
+            }
+          }
+          // if there was a newline here (segment not last) force a new line
+          if (si < segments.length - 1) {
+            // push current line (even if empty -> blank line)
+            lines.push({ type: 'text', spans: curLine });
+            curLine = [];
+            curWidth = 0;
+          }
+        }
+      }
+      if (curLine.length > 0) lines.push({ type: 'text', spans: curLine });
+    }
+    const lineHeight = Math.round(fSize * 1.2);
+    let totalH = 0;
+    for (const l of lines) {
+      if (l.type === 'text') totalH += lineHeight;
+      else totalH += Math.min(96, SVG_HEIGHT / 3);
+    }
+    return { lines, totalH, lineHeight };
+  };
+
+  // Reduce font size if layout height exceeds image height
+  let layout = buildLayout(currentFontSize);
+  while (layout.totalH > SVG_HEIGHT - 8 && currentFontSize > 10) {
+    currentFontSize -= 2;
+    layout = buildLayout(currentFontSize);
+  }
+
+  // Build SVG string
+  const { lines, lineHeight } = layout;
+  let y = Math.max(12, Math.round((SVG_HEIGHT - layout.totalH) / 2) + lineHeight - (lineHeight / 4));
+  const svgParts: string[] = [];
+  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">`);
+  svgParts.push(`<rect width="100%" height="100%" fill="${bg}"/>`);
+  let idx = 0;
+  for (const l of lines) {
+    if (l.type === 'image') {
+      const imgSize = 96;
+      const x = Math.round((SVG_WIDTH - imgSize) / 2);
+      const yImg = Math.round(y - imgSize / 2);
+      const src = l.src;
+      svgParts.push(`<image x="${x}" y="${yImg}" width="${imgSize}" height="${imgSize}" href="${src}" />`);
+      y += imgSize + 6;
+    } else {
+      let tspanParts = '';
+      for (const sp of l.spans) {
+        const fill = sp.color || defaultTextColor;
+        const fontWeight = sp.bold ? '700' : '400';
+        const fontStyle = sp.italic ? 'italic' : 'normal';
+        const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        tspanParts += `<tspan fill="${fill}" font-weight="${fontWeight}" font-style="${fontStyle}">${esc(sp.text)}</tspan>`;
+      }
+      // xml:space="preserve" keeps multiple spaces from collapsing
+      svgParts.push(`<text xml:space="preserve" x="${SVG_WIDTH / 2}" y="${y}" font-family="Arial, sans-serif" font-size="${currentFontSize}" text-anchor="middle">${tspanParts}</text>`);
+      y += lineHeight;
+    }
+    idx++;
+  }
+  svgParts.push('</svg>');
+  const svg = svgParts.join('\n');
+  return { svg, usedFontSize: currentFontSize };
+}
+
 export class DeviceController {
   devicesByName: Map<string, Device>;
   verifyOptions: any;
   deviceStates: Map<string, { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number }> = new Map();
   devicePollTimers: Map<string, NodeJS.Timeout> = new Map();
   mqttPublisher?: MqttPublishFn;
+  imageStatusPublisher?: import('./types').MqttImageStatusFn;
   // Optional override hook used by tests to intercept image uploads.
   // signature: device, buffer, filename, contentType
   imageUploader?: (device: Device, buf: Buffer, filename: string, contentType: string) => Promise<boolean>;
@@ -105,6 +269,20 @@ export class DeviceController {
 
   setMqttPublisher(p: MqttPublishFn) {
     this.mqttPublisher = p;
+  }
+
+  setImageStatusPublisher(p: import('./types').MqttImageStatusFn) {
+    this.imageStatusPublisher = p;
+  }
+
+  private async publishImageStatus(deviceName: string, payload: any, retain = true): Promise<void> {
+    if (!this.imageStatusPublisher) return;
+    try {
+      const pl = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      await this.imageStatusPublisher(deviceName, pl, retain);
+    } catch (err: any) {
+      warn('Failed to publish IMAGE/STATUS', deviceName, err?.message || err);
+    }
   }
 
   getDevice(name: string): Device | undefined {
@@ -357,25 +535,319 @@ export class DeviceController {
 
       const uploadUrl = `http://${device.host}/doUpload?dir=/image/`;
       const filename = `upload.${finalExt}`;
+      await this.publishImageStatus(device.name, { stage: 'uploading', filename });
       const uploadOk = this.imageUploader ? await this.imageUploader(device, finalBuffer, filename, finalMime) : await httpClient.postForm(uploadUrl, 'image', finalBuffer, filename, finalMime);
-      if (!uploadOk) return false;
+      if (!uploadOk) {
+        await this.publishImageStatus(device.name, { stage: 'upload_failed', filename });
+        return false;
+      }
+      await this.publishImageStatus(device.name, { stage: 'uploaded', filename });
 
-      // set theme to 3 (allow tests to override sendGet via sendGetFn)
-      const sendGetToUse = this.sendGetFn ?? httpClient.sendGet;
-      await sendGetToUse(`http://${device.host}/set?theme=3`);
-      // select the uploaded image
-      const encodedPath = encodeURIComponent(`/image//upload.${finalExt}`);
-      await sendGetToUse(`http://${device.host}/set?img=${encodedPath}`);
+      // After upload, try to select the image and set theme using a robust helper
+  await this.publishImageStatus(device.name, { stage: 'selecting', filename });
+  const sel = await this.selectImageAndSetTheme(device, filename);
+  // Log the successful URLs (if any) to aid debugging
+  log('IMAGE/SET final status', device.name, 'themeOk', sel.themeOk, 'imgSelected', sel.imgSelected, 'themeUrl', sel.themeUrl ?? 'none', 'imgUrl', sel.imgUrl ?? 'none');
+  await this.publishImageStatus(device.name, { stage: 'done', themeOk: sel.themeOk, imgSelected: sel.imgSelected, themeUrl: sel.themeUrl, imgUrl: sel.imgUrl });
 
-      // Publish theme or verify
+      // If verification is enabled, rely on verification to publish state; otherwise publish only when we have evidence of success
       if (this.verifyOptions?.afterCommand) {
         await this.verifyCommand(device, 'THEME', 3);
       } else {
-        this.maybePublishState(device.name, { theme: 3 });
+        if (sel.themeOk) this.maybePublishState(device.name, { theme: 3 });
       }
-      return true;
+      return sel.themeOk || sel.imgSelected;
     } catch (err: any) {
       warn('Image processing/upload failed', err?.message || err);
+      await this.publishImageStatus(device.name, { stage: 'error', message: err?.message || err });
+      return false;
+    }
+  }
+
+  // Try multiple variants of the uploaded image path (encoded/unencoded, single/double slash, leading slash/no slash)
+  // and try both orders (theme first / image first) with retries. Returns which operations reported success.
+  private async selectImageAndSetTheme(device: Device, filename: string, options?: { selectionDelayMs?: number; attempts?: number; initialDelayMs?: number; }): Promise<{ themeOk: boolean; imgSelected: boolean; themeUrl?: string; imgUrl?: string }> {
+    const sendGetToUse = this.sendGetFn ?? httpClient.sendGet;
+        const selectionDelayMs = options?.selectionDelayMs ?? (device.image && typeof device.image.selectionDelayMs === 'number' ? device.image.selectionDelayMs : 250);
+        const attempts = options?.attempts ?? (device.image && typeof device.image.selectionAttempts === 'number' ? device.image.selectionAttempts : 2);
+        const initialDelayMs = options?.initialDelayMs ?? (device.image && typeof device.image.selectionInitialDelayMs === 'number' ? device.image.selectionInitialDelayMs : 200);
+
+    const wait = (ms: number) => new Promise((res) => {
+      const t = setTimeout(res, ms);
+      if (typeof (t as any).unref === 'function') (t as any).unref();
+    });
+
+        const tryOnce = async (url: string, description: string): Promise<boolean> => {
+          try {
+            log('IMAGE/GENERATE', description, 'trying', device.name, url);
+            const res = await sendGetToUse(url);
+            const ok = res && (res as any).status && (res as any).status >= 200 && (res as any).status < 300;
+            if (ok) {
+              log('IMAGE/GENERATE', description, 'OK', device.name, `status:${(res as any).status}`);
+              return true;
+            }
+            const status = res && (res as any).status ? (res as any).status : undefined;
+            let snippet = '';
+            try {
+              if (res && (res as any).data) {
+                const s = typeof (res as any).data === 'string' ? (res as any).data : JSON.stringify((res as any).data);
+                snippet = s.slice(0, 200);
+              }
+            } catch (e) {
+              snippet = String((res as any).data || '');
+            }
+            log('IMAGE/GENERATE', description, 'non-2xx or null', device.name, `status:${status}`, `body:${snippet}`);
+          } catch (err: any) {
+            warn('IMAGE/GENERATE', description, 'error', device.name, err?.message || err);
+          }
+          return false;
+        };
+
+    // Give the device a bit more time to process the uploaded file
+    await wait(selectionDelayMs);
+
+    // Candidate raw paths
+    const base = `/image`;
+    const rawCandidates = [`${base}//${filename}`, `${base}/${filename}`, `/${filename}`, `${filename}`];
+
+    // Helper to generate both encoded and raw URL forms for a given path
+    const urlVariants = (p: string) => {
+      return [
+        `http://${device.host}/set?img=${encodeURIComponent(p)}`,
+        `http://${device.host}/set?img=${p}`,
+      ];
+    };
+
+    // First try: select image first then set theme (batch passes)
+    const themeUrl = `http://${device.host}/set?theme=3`;
+  let themeOk = false;
+  let imgSelected = false;
+  let successfulThemeUrl: string | undefined;
+  let successfulImgUrl: string | undefined;
+    let delayBatch = initialDelayMs;
+
+    // Try selecting image with up to `attempts` passes
+    for (let pass = 1; pass <= attempts; pass++) {
+      log('IMAGE/GENERATE', 'set image pass', pass, device.name);
+      for (const p of rawCandidates) {
+        for (const url of urlVariants(p)) {
+          if (await tryOnce(url, 'set image')) {
+            imgSelected = true;
+            successfulImgUrl = url;
+            break;
+          }
+        }
+        if (imgSelected) break;
+      }
+      if (imgSelected) break;
+      if (pass < attempts) await wait(delayBatch);
+      delayBatch *= 2;
+    }
+
+    if (imgSelected) {
+      // try setting theme after image selection
+      delayBatch = initialDelayMs;
+      for (let pass = 1; pass <= attempts; pass++) {
+        log('IMAGE/GENERATE', 'set theme pass', pass, device.name, themeUrl);
+        if (await tryOnce(themeUrl, 'set theme')) {
+          themeOk = true;
+          successfulThemeUrl = themeUrl;
+          break;
+        }
+        if (pass < attempts) await wait(delayBatch);
+        delayBatch *= 2;
+      }
+      return { themeOk, imgSelected, themeUrl: successfulThemeUrl, imgUrl: successfulImgUrl };
+    }
+
+    // Second try (fallback): set theme then select image
+    delayBatch = initialDelayMs;
+    // Try theme first with up to `attempts` passes
+    for (let pass = 1; pass <= attempts; pass++) {
+      log('IMAGE/GENERATE', 'set theme pass', pass, device.name, themeUrl);
+      if (await tryOnce(themeUrl, 'set theme')) {
+        themeOk = true;
+        successfulThemeUrl = themeUrl;
+        break;
+      }
+      if (pass < attempts) await wait(delayBatch);
+      delayBatch *= 2;
+    }
+
+    if (themeOk) {
+      // try selecting image with up to `attempts` passes
+      delayBatch = initialDelayMs;
+      for (let pass = 1; pass <= attempts; pass++) {
+        log('IMAGE/GENERATE', 'set image pass', pass, device.name);
+        for (const p of rawCandidates) {
+          for (const url of urlVariants(p)) {
+            if (await tryOnce(url, 'set image')) {
+              imgSelected = true;
+              successfulImgUrl = url;
+              break;
+            }
+          }
+          if (imgSelected) break;
+        }
+  if (imgSelected) return { themeOk, imgSelected, themeUrl: successfulThemeUrl, imgUrl: successfulImgUrl };
+        if (pass < attempts) await wait(delayBatch);
+        delayBatch *= 2;
+      }
+  return { themeOk, imgSelected, themeUrl: successfulThemeUrl, imgUrl: successfulImgUrl };
+    }
+
+    // Nothing worked
+    return { themeOk: false, imgSelected: false };
+  }
+
+  // Generate an image from text/markup and upload it to the device, then select it
+  async generateAndUploadImage(deviceName: string, payload: any): Promise<boolean> {
+    const device = this.getDevice(deviceName);
+    if (!device) {
+      warn('Device not found', deviceName);
+      return false;
+    }
+
+    // normalize payload
+    let text = '';
+    let bg = '#000000';
+    let defaultTextColor = '#ffffff';
+    let fontSize = 28;
+    if (payload && typeof payload === 'object') {
+      text = String(payload.text || payload.message || payload.value || '');
+      if (payload.background) bg = String(payload.background);
+      if (payload.textColor) defaultTextColor = String(payload.textColor);
+      if (payload.fontSize) fontSize = Number(payload.fontSize) || fontSize;
+    } else {
+      text = String(payload || '');
+    }
+
+    if (!text) {
+      warn('IMAGE/GENERATE missing text payload for', deviceName);
+      return false;
+    }
+
+    // Use shared helper to build SVG string (handles newline and space preservation)
+    log('IMAGE/GENERATE requested', device.name, 'textLen', String(text).length, 'background', bg, 'textColor', defaultTextColor, 'fontSize', fontSize);
+    const { svg, usedFontSize } = buildSvgForText(text, bg, defaultTextColor, fontSize);
+    const currentFontSize = usedFontSize;
+
+    try {
+  log('IMAGE/GENERATE rendering SVG', device.name, 'svgLen', Buffer.byteLength(svg), 'fontSize', currentFontSize);
+  await this.publishImageStatus(device.name, { stage: 'rendering', textLen: String(text).length });
+      // render SVG to JPEG buffer
+      const outBuf = await sharp(Buffer.from(svg)).resize(240, 240).jpeg({ quality: 90 }).toBuffer();
+      log('IMAGE/GENERATE rendered', device.name, 'bytes', outBuf.length);
+      // upload like processImageAndUpload: use jpg
+      const uploadUrl = `http://${device.host}/doUpload?dir=/image/`;
+      const filename = `upload.jpg`;
+      log('IMAGE/GENERATE uploading', device.name, uploadUrl, 'filename', filename, 'contentType', 'image/jpeg', 'size', outBuf.length);
+      const uploadOk = this.imageUploader ? await this.imageUploader(device, outBuf, filename, 'image/jpeg') : await httpClient.postForm(uploadUrl, 'image', outBuf, filename, 'image/jpeg');
+      if (!uploadOk) {
+        warn('IMAGE/GENERATE upload failed', device.name);
+        return false;
+      }
+  log('IMAGE/GENERATE upload OK', device.name, 'filename', filename);
+  await this.publishImageStatus(device.name, { stage: 'uploaded', filename });
+
+      const sendGetToUse = this.sendGetFn ?? httpClient.sendGet;
+
+      // little helper to try an URL with retries
+      const trySetUrl = async (url: string, description: string, attempts = 2, initialDelayMs = 200): Promise<boolean> => {
+        let delay = initialDelayMs;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          try {
+            log('IMAGE/GENERATE', description, 'attempt', attempt, device.name, url);
+            const res = await sendGetToUse(url);
+            const ok = res && (res as any).status && (res as any).status >= 200 && (res as any).status < 300;
+            if (ok) {
+              log('IMAGE/GENERATE', description, 'OK', device.name, `status:${(res as any).status}`);
+              return true;
+            }
+            // Log more context: status and a short snippet of the response body if present
+            const status = res && (res as any).status ? (res as any).status : undefined;
+            let snippet = '';
+            try {
+              if (res && (res as any).data) {
+                const s = typeof (res as any).data === 'string' ? (res as any).data : JSON.stringify((res as any).data);
+                snippet = s.slice(0, 200);
+              }
+            } catch (e) {
+              snippet = String((res as any).data || '');
+            }
+            log('IMAGE/GENERATE', description, 'non-2xx or null', device.name, `status:${status}`, `body:${snippet}`);
+          } catch (err: any) {
+            warn('IMAGE/GENERATE', description, 'error', device.name, err?.message || err);
+          }
+          await new Promise((resolve) => {
+            const t = setTimeout(resolve, delay);
+            if (typeof (t as any).unref === 'function') (t as any).unref();
+          });
+          delay *= 2;
+        }
+        return false;
+      };
+
+  // Use the shared helper to try selecting the image and setting the theme robustly
+  await this.publishImageStatus(device.name, { stage: 'selecting', filename });
+  const sel = await this.selectImageAndSetTheme(device, filename);
+  log('IMAGE/GENERATE final status', device.name, 'themeOk', sel.themeOk, 'imgSelected', sel.imgSelected, 'themeUrl', sel.themeUrl ?? 'none', 'imgUrl', sel.imgUrl ?? 'none');
+  await this.publishImageStatus(device.name, { stage: 'done', themeOk: sel.themeOk, imgSelected: sel.imgSelected, themeUrl: sel.themeUrl, imgUrl: sel.imgUrl });
+
+      let themeOk = sel.themeOk;
+
+      // If our attempts didn't report success, do a one-shot verification fetch of app.json to see
+      // whether the device already has THEME=3 (some firmwares apply changes despite returning non-2xx)
+      if (!themeOk) {
+        try {
+          // Prefer a quick GET hook when tests provide `sendGetFn` so we don't block on axios timeouts
+          let data: any = null;
+          if (this.sendGetFn) {
+            try {
+              const res = await (this.sendGetFn as any)(`http://${device.host}/app.json`);
+              if (res && (res as any).data) data = (res as any).data;
+            } catch (e) {
+              // ignore - don't fall back to httpClient when a test hook exists
+            }
+          } else {
+            data = await httpClient.getJson(`http://${device.host}/app.json`);
+          }
+          let currentTheme: number | undefined;
+          if (data && typeof data === 'object') {
+            if (typeof (data as any).theme === 'number') currentTheme = Number((data as any).theme);
+            else if (typeof (data as any).value === 'number') currentTheme = Number((data as any).value);
+            else if ((data as any).app && typeof (data as any).app === 'object') {
+              if (typeof (data as any).app.theme === 'number') currentTheme = Number((data as any).app.theme);
+              else if (typeof (data as any).app.value === 'number') currentTheme = Number((data as any).app.value);
+            }
+          }
+          if (currentTheme === 3) {
+            log('IMAGE/GENERATE verification matched THEME', device.name, currentTheme);
+            themeOk = true;
+            // publish state when verification deterministically matched
+            if (!this.verifyOptions?.afterCommand) this.maybePublishState(device.name, { theme: 3 }, true);
+          } else {
+            log('IMAGE/GENERATE verification THEME value', device.name, currentTheme);
+          }
+        } catch (err: any) {
+          warn('IMAGE/GENERATE verification fetch error', device.name, err?.message || err);
+        }
+      }
+
+      if (this.verifyOptions?.afterCommand) {
+        await this.verifyCommand(device, 'THEME', 3);
+      } else {
+        if (themeOk) {
+          this.maybePublishState(device.name, { theme: 3 }, true);
+        } else {
+          warn('IMAGE/GENERATE set theme did not return success and verification failed', device.name);
+          await this.publishImageStatus(device.name, { stage: 'error', message: 'set theme did not return success and verification failed' });
+        }
+      }
+      return themeOk || sel.imgSelected;
+    } catch (err: any) {
+      warn('IMAGE/GENERATE processing failed', err?.message || err);
+      await this.publishImageStatus(device.name, { stage: 'error', message: err?.message || err });
       return false;
     }
   }

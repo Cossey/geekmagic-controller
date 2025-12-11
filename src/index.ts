@@ -12,6 +12,11 @@ async function main() {
   mqtt.start();
     // Wire DeviceController to publish state back to MQTT with retain
     controller.setMqttPublisher(mqtt.publishState.bind(mqtt));
+    // Wire DeviceController to publish image status events to <basetopic>/<device>/IMAGE/STATUS
+    controller.setImageStatusPublisher(async (deviceName: string, payload: string, retain = false) => {
+      const topic = `${cfg.mqtt.basetopic}/${deviceName}/IMAGE/STATUS`;
+      await mqtt.publish(topic, payload, { retain });
+    });
     // Start periodic polling after MQTT connects so retained state is published over a connected client.
     mqtt.onConnect(() => controller.startStatePolling());
     process.on('SIGINT', () => {

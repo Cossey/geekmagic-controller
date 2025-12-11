@@ -10,6 +10,13 @@ export type Device = {
   image?: {
     oversize?: 'crop' | 'resize';
     cropposition?: 'top' | 'left' | 'bottom' | 'right' | 'topleft' | 'topright' | 'bottomleft' | 'bottomright' | 'center';
+    // Optional tuning for image selection after upload (milliseconds / attempts)
+    // `selectionDelayMs` - time to wait after upload before trying to select the image
+    // `selectionAttempts` - number of attempts per URL variant
+    // `selectionInitialDelayMs` - initial retry delay between attempts (exponential backoff)
+    selectionDelayMs?: number;
+    selectionAttempts?: number;
+    selectionInitialDelayMs?: number;
   };
 };
 
@@ -43,5 +50,13 @@ export type ConfigSchema = {
 export type MqttPublishFn = (
   deviceName: string,
   state: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number },
+  retain?: boolean
+) => Promise<void>;
+
+// A convenience function DeviceController can call to publish image status messages to MQTT.
+// The implementation (in index.ts) will typically publish to `<basetopic>/<deviceName>/IMAGE/STATUS`.
+export type MqttImageStatusFn = (
+  deviceName: string,
+  payload: string,
   retain?: boolean
 ) => Promise<void>;
