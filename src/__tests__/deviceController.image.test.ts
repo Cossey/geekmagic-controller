@@ -169,4 +169,33 @@ describe('DeviceController IMAGE handling', () => {
     expect(capturedFilename).toBe('upload.jpg');
     expect(capturedContentType).toBe('image/jpeg');
   });
+
+  test('resize GIF input and upload as GIF (animation preserved)', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    let capturedBuf: Buffer | null = null;
+    let capturedFilename: string | undefined;
+    let capturedContentType: string | undefined;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string, contentType: string) => {
+      capturedBuf = buf;
+      capturedFilename = filename;
+      capturedContentType = contentType;
+      return true;
+    });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+
+    // create a 480x480 PNG and convert it to a GIF buffer (single-frame GIF)
+    const img = await new Jimp(480, 480, 0x445566ff);
+    const png = await img.getBufferAsync(Jimp.MIME_PNG);
+    const gifBuf = await require('sharp')(png).gif().toBuffer();
+    const dataUri = `data:image/gif;base64,${gifBuf.toString('base64')}`;
+
+    await controller.handleCommand(device.name, 'IMAGE', dataUri);
+
+    expect(capturedFilename).toBe('upload.gif');
+    expect(capturedContentType).toBe('image/gif');
+    expect(capturedBuf).not.toBeNull();
+    // confirm buffer starts with GIF header
+    expect(capturedBuf!.slice(0, 3).toString('ascii')).toBe('GIF');
+  });
 });

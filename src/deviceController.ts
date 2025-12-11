@@ -2,6 +2,7 @@ import { Device } from './types';
 import type { MqttPublishFn } from './types';
 import * as httpClient from './httpClient';
 import Jimp from 'jimp';
+import sharp from 'sharp';
 import { log, warn } from './logger';
 
 export class DeviceController {
@@ -19,65 +20,6 @@ export class DeviceController {
   constructor(devices: Device[], verifyOptions?: any) {
     this.devicesByName = new Map(devices.map((d) => [d.name, d]));
     this.verifyOptions = verifyOptions || {};
-  }
-
-  setMqttPublisher(p: MqttPublishFn) {
-    this.mqttPublisher = p;
-  }
-
-  getDevice(name: string): Device | undefined {
-    return this.devicesByName.get(name);
-  }
-
-  async handleCommand(deviceName: string, command: string, payload: string): Promise<void> {
-    const device = this.getDevice(deviceName);
-    if (!device) {
-      warn('Device not found', deviceName);
-      return;
-    }
-    const cmd = command?.toUpperCase();
-    // Special handling for IMAGE uploads
-    if (cmd === 'IMAGE') {
-      try {
-        const ok = await this.processImageAndUpload(device, payload);
-        if (!ok) warn('IMAGE upload failed for', deviceName);
-      } catch (err: any) {
-        warn('IMAGE upload error', err?.message || err);
-      }
-      return;
-    }
-    const url = this.buildCommandUrl(device, command, payload);
-    if (!url) {
-      warn('Unsupported command', command, 'for device', deviceName);
-      return;
-    }
-  log('Sending to device', deviceName, url);
-  await httpClient.sendGet(url);
-    // After command is sent, optionally verify via JSON endpoints
-    const verify = this.verifyOptions?.afterCommand;
-    if (verify && (cmd === 'THEME' || cmd === 'BRIGHTNESS' || cmd === 'COLONBLINK' || cmd === '12HOUR' || cmd === 'DST')) {
-      const expected = Number(payload);
-      // only verify for numeric commands
-      if (Number.isInteger(expected)) {
-  const ok = await this.verifyCommand(device, cmd, expected);
-        if (!ok) {
-          warn('Verification failed for', command, 'on device', deviceName);
-        }
-      }
-    }
-    // If verification is disabled, assume success and update cached state + publish to MQTT
-  if (!verify && (cmd === 'BRIGHTNESS' || cmd === 'THEME' || cmd === 'COLONBLINK' || cmd === '12HOUR' || cmd === 'DST')) {
-      const expected = Number(payload);
-      if (Number.isInteger(expected)) {
-        const partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number } = {};
-        if (cmd === 'BRIGHTNESS') partial.brt = expected;
-        if (cmd === 'THEME') partial.theme = expected;
-        if (cmd === 'COLONBLINK') partial.colon = expected;
-        if (cmd === '12HOUR') partial.hour12 = expected;
-        if (cmd === 'DST') partial.dst = expected;
-        this.maybePublishState(deviceName, partial);
-      }
-    }
   }
 
   buildCommandUrl(device: Device, command: string, payload: string): string | null {
@@ -158,6 +100,65 @@ export class DeviceController {
         return null;
       default:
         return null;
+    }
+  }
+
+  setMqttPublisher(p: MqttPublishFn) {
+    this.mqttPublisher = p;
+  }
+
+  getDevice(name: string): Device | undefined {
+    return this.devicesByName.get(name);
+  }
+
+  async handleCommand(deviceName: string, command: string, payload: string): Promise<void> {
+    const device = this.getDevice(deviceName);
+    if (!device) {
+      warn('Device not found', deviceName);
+      return;
+    }
+    const cmd = command?.toUpperCase();
+    // Special handling for IMAGE uploads
+    if (cmd === 'IMAGE') {
+      try {
+        const ok = await this.processImageAndUpload(device, payload);
+        if (!ok) warn('IMAGE upload failed for', deviceName);
+      } catch (err: any) {
+        warn('IMAGE upload error', err?.message || err);
+      }
+      return;
+    }
+    const url = this.buildCommandUrl(device, command, payload);
+    if (!url) {
+      warn('Unsupported command', command, 'for device', deviceName);
+      return;
+    }
+  log('Sending to device', deviceName, url);
+  await httpClient.sendGet(url);
+    // After command is sent, optionally verify via JSON endpoints
+    const verify = this.verifyOptions?.afterCommand;
+    if (verify && (cmd === 'THEME' || cmd === 'BRIGHTNESS' || cmd === 'COLONBLINK' || cmd === '12HOUR' || cmd === 'DST')) {
+      const expected = Number(payload);
+      // only verify for numeric commands
+      if (Number.isInteger(expected)) {
+        const ok = await this.verifyCommand(device, cmd, expected);
+        if (!ok) {
+          warn('Verification failed for', command, 'on device', deviceName);
+        }
+      }
+    }
+    // If verification is disabled, assume success and update cached state + publish to MQTT
+    if (!verify && (cmd === 'BRIGHTNESS' || cmd === 'THEME' || cmd === 'COLONBLINK' || cmd === '12HOUR' || cmd === 'DST')) {
+      const expected = Number(payload);
+      if (Number.isInteger(expected)) {
+        const partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number } = {};
+        if (cmd === 'BRIGHTNESS') partial.brt = expected;
+        if (cmd === 'THEME') partial.theme = expected;
+        if (cmd === 'COLONBLINK') partial.colon = expected;
+        if (cmd === '12HOUR') partial.hour12 = expected;
+        if (cmd === 'DST') partial.dst = expected;
+        this.maybePublishState(deviceName, partial);
+      }
     }
   }
 
@@ -260,27 +261,60 @@ export class DeviceController {
       else if (s[0] === 0xff && s[1] === 0xd8) origMime = 'image/jpeg';
       else if (s[0] === 0x89 && s[1] === 0x50 && s[2] === 0x4e && s[3] === 0x47) origMime = 'image/png';
 
-      const img = await Jimp.read(buffer);
       const cfg = device.image || {};
       const oversize = cfg.oversize || 'resize';
       const cropposition = (cfg.cropposition || 'center') as string;
 
       const finalSize = 240;
-      const w = img.getWidth();
-      const h = img.getHeight();
+
+      // Use sharp metadata to decide how to process and whether it's an animated GIF
+      const meta = await sharp(buffer, { animated: true }).metadata();
+      const format = (meta.format || '').toLowerCase();
+
+      // Map crop position to sharp's position identifiers
+      const mapPosition = (pos: string) => {
+        switch ((pos || 'center').toLowerCase()) {
+          case 'topleft': return 'northwest';
+          case 'topright': return 'northeast';
+          case 'bottomleft': return 'southwest';
+          case 'bottomright': return 'southeast';
+          case 'top': return 'north';
+          case 'bottom': return 'south';
+          case 'left': return 'west';
+          case 'right': return 'east';
+          default: return 'center';
+        }
+      };
 
       let finalBuffer: Buffer;
       let finalExt = 'jpg';
       let finalMime = 'image/jpeg';
 
-      // If original was GIF and already the right size, keep it as GIF and upload as-is
-      if (origMime === 'image/gif' && w === finalSize && h === finalSize) {
-        finalBuffer = buffer;
-        finalExt = 'gif';
-        finalMime = 'image/gif';
+      if (format === 'gif') {
+        const w = meta.width || 0;
+        const h = meta.height || 0;
+        if (w === finalSize && h === finalSize) {
+          // already the right size — upload GIF as-is
+          finalBuffer = buffer;
+          finalExt = 'gif';
+          finalMime = 'image/gif';
+        } else {
+          // Resize/crop while preserving animation using sharp's animated pipeline
+          const fit = oversize === 'crop' ? 'cover' : 'contain';
+          const position = mapPosition(cropposition) as any;
+          finalBuffer = await sharp(buffer, { animated: true })
+            .resize(finalSize, finalSize, { fit: fit as any, position, background: { r: 255, g: 255, b: 255, alpha: 1 } })
+            .gif()
+            .toBuffer();
+          finalExt = 'gif';
+          finalMime = 'image/gif';
+        }
       } else {
-        // process image via Jimp and output JPEG
-        if (oversize === 'crop' && (w > finalSize || h > finalSize)) {
+        // Non-GIF: normalize to JPG and ensure 240x240. When oversize=crop and source is larger,
+        // compute an explicit extract region to match the Jimp-based crop behavior exactly.
+        const w = meta.width || 0;
+        const h = meta.height || 0;
+        if (oversize === 'crop' && (w > finalSize || h > finalSize) && w >= finalSize && h >= finalSize) {
           // compute left/top based on cropposition
           let left = 0;
           let top = 0;
@@ -306,20 +340,17 @@ export class DeviceController {
             default:
               left = horizontalCenter; top = verticalCenter; break;
           }
-          // Ensure we can crop desired area; fallback to contain if image is smaller
-          if (w >= finalSize && h >= finalSize) {
-            img.crop(left, top, finalSize, finalSize);
-          } else {
-            img.contain(finalSize, finalSize, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE);
-          }
+          finalBuffer = await sharp(buffer)
+            .extract({ left, top, width: finalSize, height: finalSize })
+            .jpeg({ quality: 90 })
+            .toBuffer();
         } else {
-          img.contain(finalSize, finalSize, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE);
+          const position = mapPosition(cropposition) as any;
+          finalBuffer = await sharp(buffer)
+            .resize(finalSize, finalSize, { fit: 'contain', position, background: { r: 255, g: 255, b: 255, alpha: 1 } })
+            .jpeg({ quality: 90 })
+            .toBuffer();
         }
-
-        // Ensure exact 240x240
-        if (img.getWidth() !== finalSize || img.getHeight() !== finalSize) img.resize(finalSize, finalSize);
-
-        finalBuffer = await img.getBufferAsync(Jimp.MIME_JPEG);
         finalExt = 'jpg';
         finalMime = 'image/jpeg';
       }

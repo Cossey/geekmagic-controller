@@ -92,6 +92,7 @@ Supported upload formats and behavior
 
 - The device accepts JPG/JPEG and GIF uploads. If an input image is not in a supported format (for example, PNG), the controller will convert it to JPG before uploading.
 - If the input is a GIF and is already exactly 240x240, the controller will upload it as a GIF and preserve the GIF (no conversion). If the GIF is not the right size it will be converted to JPG.
+- If the input is a GIF and is already exactly 240x240, the controller will upload it as a GIF and preserve the GIF (no conversion). If the GIF is not 240x240 the controller will resize/crop it to 240x240 and upload an animated GIF (animation is preserved when possible).
 - Upload endpoint: the controller uploads images via multipart/form-data to `http://<device.host>/doUpload?dir=/image/` using a single form field named `image`.
 - The uploaded filename is always `upload.<ext>` (for example `upload.jpg` or `upload.gif`) so that the device can overwrite the same file each time and conserve storage.
 - After setting the theme to `3` the controller also instructs the device to select the uploaded file by calling:
