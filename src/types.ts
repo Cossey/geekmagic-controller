@@ -6,6 +6,11 @@ export type Device = {
   // `polling` controls per-device polling interval in seconds. If 0, polling for the device is disabled.
   // Defaults to the global `verify.pollIntervalSeconds` or 30 if not set.
   polling?: number;
+  // Optional image upload configuration for IMAGE SET handling
+  image?: {
+    oversize?: 'crop' | 'resize';
+    cropposition?: 'top' | 'left' | 'bottom' | 'right' | 'topleft' | 'topright' | 'bottomleft' | 'bottomright' | 'center';
+  };
 };
 
 export type MQTTConfig = {

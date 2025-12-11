@@ -62,6 +62,7 @@ The controller supports two patterns for sending commands:
   - `mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/COLONBLINK/SET -m 'YES'`
   - `mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/12HOUR/SET -m 'NO'`
   - `mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/DST/SET -m 'YES'`
+  - `mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/SET -m '<data-uri-or-base64>'`
 
   The `device/<ITEM>/SET` payload accepts a plain value, e.g. `75`, or JSON like `{"value":75}`.
 
@@ -69,8 +70,8 @@ The controller supports two patterns for sending commands:
 
 
 
-- `<basetopic>/<deviceName>/BRIGHTNESS` – value is 0-100
-- `<basetopic>/<deviceName>/THEME` – value is 1-7
+ - `<basetopic>/<deviceName>/BRIGHTNESS` – value is 0-100
+ - `<basetopic>/<deviceName>/THEME` – value is 1-7
  - `<basetopic>/<deviceName>/COLONBLINK` – value is YES/NO (device value 1/0)
  - `<basetopic>/<deviceName>/12HOUR` – value is YES/NO (device value 1/0)
  - `<basetopic>/<deviceName>/DST` – value is YES/NO (device value 1/0)
@@ -79,6 +80,29 @@ For boolean flags (COLONBLINK, 12HOUR, DST):
 
 - Publishing: these state topics will be published as the strings `YES` for 1 and `NO` for 0 to abstract the underlying numeric values.
 - Set (command): you can send a SET payload as any of the following and it will be normalized to 0/1 for the device: `YES`/`NO`, `1`/`0`, `true`/`false`, `ON`/`OFF`.
+
+IMAGE uploads
+
+- Publish to `<basetopic>/<deviceName>/IMAGE/SET` with the payload set to a data URI (e.g. `data:image/png;base64,...`) or a raw base64 string of the image.
+- The controller will process the image and ensure the final uploaded image is exactly 240x240 pixels.
+- If the incoming image is larger than 240x240, the per-device image config (see below) controls whether the image is cropped or resized.
+- After a successful upload the controller will set `THEME` to `3` on the device automatically.
+
+Device image configuration (per-device)
+
+Add an `image` block under each device in `config.yaml` to control oversize behaviour and crop position. Example:
+
+```yaml
+devices:
+  lounge-tv:
+    type: smalltv-ultra
+    host: 192.168.1.50
+    image:
+      oversize: crop        # crop | resize  (default: resize)
+      cropposition: topright # top|left|bottom|right|topleft|topright|bottomleft|bottomright|center (default: center)
+```
+
+When `oversize: crop` the controller will extract a 240x240 section from the incoming image based on `cropposition` (for example `topright` will select the 240x240 square from the top-right corner). When `oversize: resize` the controller will scale the image to fit within a 240x240 box and pad as needed to produce an exact 240x240 final image.
 
 State topics are read-only. Sending commands is only supported on the SET subtopic, e.g. `gm/<device>/BRIGHTNESS/SET` or `gm/<device>/THEME/SET`.
 

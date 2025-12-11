@@ -1,6 +1,7 @@
 import { Device } from './types';
 import type { MqttPublishFn } from './types';
-import { sendGet, getJson } from './httpClient';
+import * as httpClient from './httpClient';
+import Jimp from 'jimp';
 import { log, warn } from './logger';
 
 export class DeviceController {
@@ -9,6 +10,10 @@ export class DeviceController {
   deviceStates: Map<string, { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number }> = new Map();
   devicePollTimers: Map<string, NodeJS.Timeout> = new Map();
   mqttPublisher?: MqttPublishFn;
+  // Optional override hook used by tests to intercept image uploads.
+  imageUploader?: (device: Device, buf: Buffer) => Promise<boolean>;
+  // Optional override for HTTP GET requests (used in tests for image flow)
+  sendGetFn?: (url: string) => Promise<any>;
 
   constructor(devices: Device[], verifyOptions?: any) {
     this.devicesByName = new Map(devices.map((d) => [d.name, d]));
@@ -30,27 +35,37 @@ export class DeviceController {
       return;
     }
     const cmd = command?.toUpperCase();
+    // Special handling for IMAGE uploads
+    if (cmd === 'IMAGE') {
+      try {
+        const ok = await this.processImageAndUpload(device, payload);
+        if (!ok) warn('IMAGE upload failed for', deviceName);
+      } catch (err: any) {
+        warn('IMAGE upload error', err?.message || err);
+      }
+      return;
+    }
     const url = this.buildCommandUrl(device, command, payload);
     if (!url) {
       warn('Unsupported command', command, 'for device', deviceName);
       return;
     }
-    log('Sending to device', deviceName, url);
-    await sendGet(url);
+  log('Sending to device', deviceName, url);
+  await httpClient.sendGet(url);
     // After command is sent, optionally verify via JSON endpoints
     const verify = this.verifyOptions?.afterCommand;
     if (verify && (cmd === 'THEME' || cmd === 'BRIGHTNESS' || cmd === 'COLONBLINK' || cmd === '12HOUR' || cmd === 'DST')) {
       const expected = Number(payload);
       // only verify for numeric commands
       if (Number.isInteger(expected)) {
-        const ok = await this.verifyCommand(device, cmd, expected);
+  const ok = await this.verifyCommand(device, cmd, expected);
         if (!ok) {
           warn('Verification failed for', command, 'on device', deviceName);
         }
       }
     }
     // If verification is disabled, assume success and update cached state + publish to MQTT
-    if (!verify && (cmd === 'BRIGHTNESS' || cmd === 'THEME' || cmd === 'COLONBLINK' || cmd === '12HOUR' || cmd === 'DST')) {
+  if (!verify && (cmd === 'BRIGHTNESS' || cmd === 'THEME' || cmd === 'COLONBLINK' || cmd === '12HOUR' || cmd === 'DST')) {
       const expected = Number(payload);
       if (Number.isInteger(expected)) {
         const partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number } = {};
@@ -185,7 +200,7 @@ export class DeviceController {
       attempt++;
       try {
   const url = `http://${host}/${file}`;
-  const data = await getJson(url);
+  const data = await httpClient.getJson(url);
         if (data && typeof data === 'object') {
           const current = data[key];
           if (Number(current) === expected) {
@@ -204,22 +219,118 @@ export class DeviceController {
       } catch (err: any) {
         warn('Verification fetch error', err?.message || err);
       }
-      // wait for delay
+      // wait for delay (unref the timer so it doesn't keep the process alive)
       // eslint-disable-next-line no-await-in-loop
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, delay);
+        if (typeof (t as any).unref === 'function') (t as any).unref();
+      });
       delay += backoff;
     }
     return false;
   }
 
+  // Process an image/gif payload, resize/crop to 240x240 according to device.image settings,
+  // upload to the device via POST to /upload and set THEME to 3 on success.
+  async processImageAndUpload(device: Device, payload: string): Promise<boolean> {
+    // Decode payload: support data URI (data:<mime>;base64,...) or raw base64
+    let buffer: Buffer;
+    try {
+      const m = String(payload || '').match(/^data:([^;]+);base64,(.*)$/i);
+      if (m) {
+        buffer = Buffer.from(m[2], 'base64');
+      } else {
+        // Try plain base64
+        buffer = Buffer.from(String(payload || ''), 'base64');
+      }
+    } catch (err: any) {
+      warn('Failed to decode IMAGE payload', err?.message || err);
+      return false;
+    }
+
+    try {
+      const img = await Jimp.read(buffer);
+      const cfg = device.image || {};
+      const oversize = cfg.oversize || 'resize';
+      const cropposition = (cfg.cropposition || 'center') as string;
+
+      const finalSize = 240;
+      const w = img.getWidth();
+      const h = img.getHeight();
+
+      if (oversize === 'crop' && (w > finalSize || h > finalSize)) {
+        // compute left/top based on cropposition
+        let left = 0;
+        let top = 0;
+        const horizontalCenter = Math.max(0, Math.floor((w - finalSize) / 2));
+        const verticalCenter = Math.max(0, Math.floor((h - finalSize) / 2));
+        switch (cropposition.toLowerCase()) {
+          case 'topleft':
+            left = 0; top = 0; break;
+          case 'topright':
+            left = Math.max(0, w - finalSize); top = 0; break;
+          case 'bottomleft':
+            left = 0; top = Math.max(0, h - finalSize); break;
+          case 'bottomright':
+            left = Math.max(0, w - finalSize); top = Math.max(0, h - finalSize); break;
+          case 'top':
+            left = horizontalCenter; top = 0; break;
+          case 'bottom':
+            left = horizontalCenter; top = Math.max(0, h - finalSize); break;
+          case 'left':
+            left = 0; top = verticalCenter; break;
+          case 'right':
+            left = Math.max(0, w - finalSize); top = verticalCenter; break;
+          default:
+            left = horizontalCenter; top = verticalCenter; break;
+        }
+        // Ensure we can crop desired area; fallback to resize if image is smaller
+        if (w >= finalSize && h >= finalSize) {
+          img.crop(left, top, finalSize, finalSize);
+        } else {
+          img.contain(finalSize, finalSize, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE);
+        }
+      } else {
+        // Resize to 240x240 preserving aspect ratio and pad background where needed
+        img.contain(finalSize, finalSize, Jimp.HORIZONTAL_ALIGN_CENTER | Jimp.VERTICAL_ALIGN_MIDDLE);
+      }
+
+      // Ensure output is exactly 240x240
+      if (img.getWidth() !== finalSize || img.getHeight() !== finalSize) {
+        img.resize(finalSize, finalSize);
+      }
+
+      const outBuffer = await img.getBufferAsync(Jimp.MIME_PNG);
+
+      const uploadUrl = `http://${device.host}/upload`;
+  const uploadOk = this.imageUploader ? await this.imageUploader(device, outBuffer) : await httpClient.postBinary(uploadUrl, outBuffer, 'image/png');
+  if (!uploadOk) return false;
+
+  // set theme to 3 (allow tests to override sendGet via sendGetFn)
+  const sendGetToUse = this.sendGetFn ?? httpClient.sendGet;
+  await sendGetToUse(`http://${device.host}/set?theme=3`);
+
+      // Publish theme or verify
+      if (this.verifyOptions?.afterCommand) {
+        await this.verifyCommand(device, 'THEME', 3);
+      } else {
+        this.maybePublishState(device.name, { theme: 3 });
+      }
+      return true;
+    } catch (err: any) {
+      warn('Image processing/upload failed', err?.message || err);
+      return false;
+    }
+  }
+
   // Fetch current device state for both brt and app and update internal map
   async loadDeviceState(device: Device): Promise<void> {
     try {
-      const brtData = await getJson(`http://${device.host}/brt.json`);
-      const appData = await getJson(`http://${device.host}/app.json`);
-      const colonData = await getJson(`http://${device.host}/colon.json`);
-      const hour12Data = await getJson(`http://${device.host}/hour12.json`);
-      const dstData = await getJson(`http://${device.host}/dst.json`);
+  const brtData = await httpClient.getJson(`http://${device.host}/brt.json`);
+  const appData = await httpClient.getJson(`http://${device.host}/app.json`);
+  const colonData = await httpClient.getJson(`http://${device.host}/colon.json`);
+  const hour12Data = await httpClient.getJson(`http://${device.host}/hour12.json`);
+  const dstData = await httpClient.getJson(`http://${device.host}/dst.json`);
       const partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number } = {};
       if (brtData && typeof brtData === 'object') {
         if ('brt' in brtData) partial.brt = Number((brtData as any).brt);
@@ -278,13 +389,14 @@ export class DeviceController {
 
   // Start periodic polling of device states; each device may set their own interval via `device.polling`.
   // If device.polling is 0, polling for that device is disabled, but initial state is still loaded.
-  startStatePolling(defaultIntervalSeconds?: number): void {
+  async startStatePolling(defaultIntervalSeconds?: number): Promise<void> {
     // clear existing per-device timers
     this.devicePollTimers.forEach((timer) => clearInterval(timer));
     this.devicePollTimers.clear();
 
     // initial load for all devices
-    this.loadStateForAllDevices();
+    // wait for initial load to complete so callers/tests can observe initial state
+    await this.loadStateForAllDevices();
 
     for (const device of this.devicesByName.values()) {
       const pol = device.polling !== undefined ? device.polling : (this.verifyOptions?.pollIntervalSeconds ?? defaultIntervalSeconds ?? 30);

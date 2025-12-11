@@ -39,7 +39,7 @@ describe('DeviceController state load', () => {
     const spyGetJson = jest.spyOn(require('../httpClient'), 'getJson').mockResolvedValue({ brt: 10, theme: 1 });
     const spySetInterval = jest.spyOn(global as any, 'setInterval');
 
-    controller.startStatePolling();
+  await controller.startStatePolling();
     // initial all devices should be loaded
     expect(spyGetJson).toHaveBeenCalled();
     // setInterval should be set only for devices with polling > 0 (d1), so called once
@@ -62,7 +62,7 @@ describe('DeviceController state load', () => {
     const spyGetJson = jest.spyOn(require('../httpClient'), 'getJson').mockResolvedValue({ brt: 10, theme: 1 });
     const spySetInterval = jest.spyOn(global as any, 'setInterval');
 
-    controller.startStatePolling();
+  await controller.startStatePolling();
 
     // setInterval should be called for both devices (2 calls) and interval parameter should be 5000
     expect(spySetInterval).toHaveBeenCalledTimes(2);
