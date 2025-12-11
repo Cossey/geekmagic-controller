@@ -154,4 +154,20 @@ describe('DeviceController state load', () => {
     expect(publishSpy).toHaveBeenCalledWith(device.name, { brt: 55, theme: 4, colon: 1, hour12: 0, dst: 1 }, true);
     spy.mockRestore();
   });
+
+  test('publishes defaults when keys missing (colon/dst/theme)', async () => {
+    const controller = new (require('../deviceController').default)([device], {} as any);
+    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+    controller.setMqttPublisher(publishSpy as any);
+    const spy = jest.spyOn(require('../httpClient'), 'getJson').mockImplementation(async (url: any) => {
+      if (url.endsWith('/brt.json')) return { brt: 80 };
+      if (url.endsWith('/hour12.json')) return { h: 1 };
+      // colon.json, dst.json, app.json are absent
+      return null;
+    });
+
+    await controller.loadDeviceState(device as any);
+    expect(publishSpy).toHaveBeenCalledWith(device.name, { brt: 80, theme: 1, colon: 0, hour12: 1, dst: 0 }, true);
+    spy.mockRestore();
+  });
 });

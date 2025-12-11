@@ -448,9 +448,22 @@ export class DeviceController {
   if (hour12Val !== undefined) partial.hour12 = hour12Val;
   const dstVal = parseNumericFrom(dstData, ['dst', 'value']) ?? parseNumericFrom(appData, ['dst', 'daylight', 'value'], 2);
   if (dstVal !== undefined) partial.dst = dstVal;
-    // update cache and publish as needed (force publish on poll/initial load)
-  log('Loaded state for', device.name, partial);
-  this.maybePublishState(device.name, partial, true);
+      // If the device didn't return certain keys, publish sensible defaults so MQTT topics exist
+      const prev = this.deviceStates.get(device.name);
+      const defaults: any = {};
+      // For boolean flags, default to NO (0) when previously unknown
+      if (partial.colon === undefined && (!prev || prev.colon === undefined)) defaults.colon = 0;
+      if (partial.hour12 === undefined && (!prev || prev.hour12 === undefined)) defaults.hour12 = 0;
+      if (partial.dst === undefined && (!prev || prev.dst === undefined)) defaults.dst = 0;
+      // For theme, default to previous if available otherwise 1
+      if (partial.theme === undefined) {
+        if (prev && typeof prev.theme === 'number') defaults.theme = prev.theme;
+        else defaults.theme = 1;
+      }
+      // merge defaults into partial (without overwriting any explicit values)
+      const merged = { ...defaults, ...partial };
+      log('Loaded state for', device.name, merged);
+      this.maybePublishState(device.name, merged, true);
     } catch (err: any) {
       warn('Failed to load device state for', device.name, err?.message || err);
     }

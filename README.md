@@ -197,3 +197,7 @@ secrets:
 ```
 
 Note: `MQTT_PASSWORD_FILE` is preferred for security reasons since the file contents are not visible in process environment or Docker inspect output.
+
+
+## AI Assistance
+Vibe coded by Raptor mini (Preview), with human "assistance".
