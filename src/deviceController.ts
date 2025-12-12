@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { log, warn } from './logger';
 
 // Build a 240x240 SVG from the markup text. This is exported so tests can assert layout
-export function buildSvgForText(text: string, bg: string, defaultTextColor: string, fontSize: number) {
+export function buildSvgForText(text: string, bg: string, defaultTextColor: string, fontSize: number, options?: { halign?: 'left' | 'center' | 'right'; valign?: 'top' | 'center' | 'bottom' }) {
   // parse blocks and markup (images, color, bold, italic). This mirrors the code used by
   // generateAndUploadImage but is separated out for testability and clearer newline handling.
   const imgTagRe = /\[img:([^\]]+)\]/gi;
@@ -135,7 +135,19 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
 
   // Build SVG string
   const { lines, lineHeight } = layout;
-  let y = Math.max(12, Math.round((SVG_HEIGHT - layout.totalH) / 2) + lineHeight - (lineHeight / 4));
+  // alignment defaults
+  const halign = (options && options.halign) || 'center';
+  const valign = (options && options.valign) || 'center';
+  // Compute starting Y based on vertical alignment
+  const minTop = 12;
+  let y: number;
+  if (valign === 'top') {
+    y = Math.max(minTop, 0) + lineHeight - (lineHeight / 4);
+  } else if (valign === 'bottom') {
+    y = Math.round(SVG_HEIGHT - layout.totalH) + lineHeight - (lineHeight / 4);
+  } else {
+    y = Math.max(minTop, Math.round((SVG_HEIGHT - layout.totalH) / 2) + lineHeight - (lineHeight / 4));
+  }
   const svgParts: string[] = [];
   svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">`);
   svgParts.push(`<rect width="100%" height="100%" fill="${bg}"/>`);
@@ -143,7 +155,11 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
   for (const l of lines) {
     if (l.type === 'image') {
       const imgSize = 96;
-      const x = Math.round((SVG_WIDTH - imgSize) / 2);
+      const margin = 4;
+      let x: number;
+      if (halign === 'left') x = margin;
+      else if (halign === 'right') x = Math.round(SVG_WIDTH - imgSize - margin);
+      else x = Math.round((SVG_WIDTH - imgSize) / 2);
       const yImg = Math.round(y - imgSize / 2);
       const src = l.src;
       svgParts.push(`<image x="${x}" y="${yImg}" width="${imgSize}" height="${imgSize}" href="${src}" />`);
@@ -158,7 +174,19 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
         tspanParts += `<tspan fill="${fill}" font-weight="${fontWeight}" font-style="${fontStyle}">${esc(sp.text)}</tspan>`;
       }
       // xml:space="preserve" keeps multiple spaces from collapsing
-      svgParts.push(`<text xml:space="preserve" x="${SVG_WIDTH / 2}" y="${y}" font-family="Arial, sans-serif" font-size="${currentFontSize}" text-anchor="middle">${tspanParts}</text>`);
+      // xml:space="preserve" keeps multiple spaces from collapsing
+      // choose x & anchor based on horizontal alignment
+      const margin = 4;
+      let xVal: number | string = SVG_WIDTH / 2;
+      let anchor = 'middle';
+      if (halign === 'left') {
+        xVal = margin;
+        anchor = 'start';
+      } else if (halign === 'right') {
+        xVal = SVG_WIDTH - margin;
+        anchor = 'end';
+      }
+      svgParts.push(`<text xml:space="preserve" x="${xVal}" y="${y}" font-family="Arial, sans-serif" font-size="${currentFontSize}" text-anchor="${anchor}">${tspanParts}</text>`);
       y += lineHeight;
     }
     idx++;
@@ -709,15 +737,25 @@ export class DeviceController {
     }
 
     // normalize payload
-    let text = '';
+  let text = '';
     let bg = '#000000';
     let defaultTextColor = '#ffffff';
     let fontSize = 28;
+  let halign: 'left' | 'center' | 'right' = 'center';
+  let valign: 'top' | 'center' | 'bottom' = 'center';
     if (payload && typeof payload === 'object') {
       text = String(payload.text || payload.message || payload.value || '');
       if (payload.background) bg = String(payload.background);
       if (payload.textColor) defaultTextColor = String(payload.textColor);
       if (payload.fontSize) fontSize = Number(payload.fontSize) || fontSize;
+      if (payload.halign) {
+        const hv = String(payload.halign).toLowerCase();
+        if (hv === 'left' || hv === 'center' || hv === 'right') halign = hv as any;
+      }
+      if (payload.valign) {
+        const vv = String(payload.valign).toLowerCase();
+        if (vv === 'top' || vv === 'center' || vv === 'bottom') valign = vv as any;
+      }
     } else {
       text = String(payload || '');
     }
@@ -729,7 +767,8 @@ export class DeviceController {
 
     // Use shared helper to build SVG string (handles newline and space preservation)
     log('IMAGE/GENERATE requested', device.name, 'textLen', String(text).length, 'background', bg, 'textColor', defaultTextColor, 'fontSize', fontSize);
-    const { svg, usedFontSize } = buildSvgForText(text, bg, defaultTextColor, fontSize);
+  const devmod = await import('./deviceController');
+  const { svg, usedFontSize } = (devmod as any).buildSvgForText(text, bg, defaultTextColor, fontSize, { halign, valign });
     const currentFontSize = usedFontSize;
 
     try {

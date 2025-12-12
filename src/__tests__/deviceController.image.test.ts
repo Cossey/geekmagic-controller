@@ -436,4 +436,63 @@ describe('DeviceController IMAGE handling', () => {
     // Check that a tspan exists which contains two spaces
     expect(/<tspan[^>]*>\s{2}<\/tspan>/.test(svgObj.svg)).toBeTruthy();
   });
+
+  test('buildSvgForText halign left and right', () => {
+    const leftSvg = buildSvgForText('Left', '#000000', '#ffffff', 28, { halign: 'left' });
+    expect(leftSvg.svg.includes('text-anchor="start"')).toBeTruthy();
+    expect(leftSvg.svg.includes('x="4"')).toBeTruthy();
+    const rightSvg = buildSvgForText('Right', '#000000', '#ffffff', 28, { halign: 'right' });
+    expect(rightSvg.svg.includes('text-anchor="end"')).toBeTruthy();
+    // right alignment should position x at width-margin
+    expect(rightSvg.svg.includes('x="236"')).toBeTruthy();
+  });
+
+  test('buildSvgForText valign top and bottom', () => {
+    const top = buildSvgForText('Line1\nLine2', '#000000', '#ffffff', 28, { valign: 'top' });
+    const bottom = buildSvgForText('Line1\nLine2', '#000000', '#ffffff', 28, { valign: 'bottom' });
+    // Extract first text y values and compare
+    const re = /<text[^>]* y="([0-9.]+)"/g;
+    const topMatch = re.exec(top.svg);
+    const bottomMatch = re.exec(bottom.svg);
+    // exec returns array where [1] is y value
+    expect(topMatch).not.toBeNull();
+    expect(bottomMatch).not.toBeNull();
+    const topY = Number((topMatch as any)[1]);
+    const bottomY = Number((bottomMatch as any)[1]);
+    // topY should be less than bottomY, as top alignment should place first line nearer to the top
+    expect(topY).toBeLessThan(bottomY);
+  });
+
+  test('generateAndUploadImage passes halign/valign to buildSvgForText', async () => {
+    const devmod = await import('../deviceController');
+    const controller = new devmod.default([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const spy = jest.spyOn(devmod, 'buildSvgForText');
+    controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+    await controller.generateAndUploadImage(device.name, { text: 'Test', halign: 'left', valign: 'top' });
+    expect(spy).toHaveBeenCalled();
+    const args = spy.mock.calls[spy.mock.calls.length - 1];
+    expect(args[0]).toBe('Test');
+    expect(args[4]).toEqual({ halign: 'left', valign: 'top' });
+    spy.mockRestore();
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generateAndUploadImage defaults to center alignment when payload is string', async () => {
+    const devmod = await import('../deviceController');
+    const controller = new devmod.default([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const spy = jest.spyOn(devmod, 'buildSvgForText');
+    controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+    await controller.generateAndUploadImage(device.name, 'Simple string');
+    expect(spy).toHaveBeenCalled();
+    const args = spy.mock.calls[spy.mock.calls.length - 1];
+    expect(args[4]).toEqual({ halign: 'center', valign: 'center' });
+    spy.mockRestore();
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
 });

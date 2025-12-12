@@ -145,7 +145,7 @@ You can programmatically generate a 240×240 image and upload it to the device b
 Payloads supported:
 
 - Plain string: treated as the text to render.
-- JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28 }` (all fields optional)
+- JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom" }` (all fields optional)
 
 Markup supported in the `text` string:
 
@@ -154,6 +154,9 @@ Markup supported in the `text` string:
 - `[i]...[/i]` — italic text.
 - `[img:data-uri]` — inline image using a data URI (for example `data:image/png;base64,...`). Inline images are centered and rendered at ~96×96.
 - Use `\n` (or real line breaks in JSON strings) to create new lines.
+
+- `halign` - Horizontal alignment for text and inline images (default `center`). Values: `left`, `center`, `right`.
+- `valign` - Vertical alignment within the 240×240 image (default `center`). Values: `top`, `center`, `bottom`.
 
 - Multiple spaces are preserved in generated text (the renderer sets xml:space="preserve" so `A  B` keeps two spaces).
 
@@ -186,6 +189,12 @@ Examples (PowerShell):
 
 ```powershell
 mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Line1\n[img:data:image/png;base64,....]"}'
+```
+
+Example with left/top alignment:
+
+```powershell
+mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Left aligned", "halign":"left", "valign":"top"}'
 ```
 
 Tip: if sending large data URIs inside MQTT messages, consider using a JSON payload and single-quoting the whole message on shells that support it so you don't need to escape inner double quotes.
