@@ -164,7 +164,8 @@ You can programmatically generate a 240×240 image and upload it to the device b
 Payloads supported:
 
 - Plain string: treated as the text to render.
-- JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom", "hmargin": 0, "vmargin": 0 }` (all fields optional)
+ - JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom", "hmargin": 0, "vmargin": 0 }` (all fields optional)
+ - JSON array: An array of the JSON objects above. The order of the array controls z-order (first is bottom-most, last is top-most). This allows rendering multiple pieces of text or overlapping inline images in specified positions.
 
 Markup supported in the `text` string:
 
@@ -222,6 +223,12 @@ Example with left/top alignment and margins:
 
 ```bash
 mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Left aligned", "halign":"left", "valign":"top", "hmargin":12, "vmargin":8 }'
+```
+
+Multiple layers example (z-order: first bottom-most, last top-most):
+
+```bash
+mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '[{"text":"Background", "background":"#000000"}, {"text":"Top text", "textColor":"#00ff00"}]'
 ```
 
 Example with center alignment and offsets:

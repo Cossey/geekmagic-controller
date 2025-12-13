@@ -153,5 +153,13 @@ describe('MqttService message handling', () => {
     expect(controller.generateAndUploadImage).toHaveBeenCalledWith('lounge-tv', { text: 'hi' });
   });
 
+  test('IMAGE/GENERATE topic triggers controller.generateAndUploadImage with array payload', async () => {
+    const controller = { generateAndUploadImage: jest.fn().mockResolvedValue(true) } as any;
+    const mqtt = new MqttService(cfg, controller);
+    const payload = [{ text: 'a' }, { text: 'b' }];
+    await mqtt.handleMessage('gm/lounge-tv/IMAGE/GENERATE', Buffer.from(JSON.stringify(payload)));
+    expect(controller.generateAndUploadImage).toHaveBeenCalledWith('lounge-tv', payload);
+  });
+
   // Note: testing the subscribe patterns via mqtt.connect mocking can be tricky - omit for now.
 });

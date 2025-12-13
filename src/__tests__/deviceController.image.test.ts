@@ -240,6 +240,65 @@ describe('DeviceController IMAGE handling', () => {
     controller.sendGetFn = undefined;
   });
 
+  test('generate accepts array payload and composites layers in z-order (first bottom-most)', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    let captured: Buffer | null = null;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => {
+      captured = buf;
+      return true;
+    });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+
+    // create two inline images (96x96) that will be centered and overlay each other
+    const red = await new Jimp(96, 96, 0xff0000ff);
+    const redBuf = await red.getBufferAsync(Jimp.MIME_PNG);
+    const redData = `data:image/png;base64,${redBuf.toString('base64')}`;
+    const blue = await new Jimp(96, 96, 0x0000ffff);
+    const blueBuf = await blue.getBufferAsync(Jimp.MIME_PNG);
+    const blueData = `data:image/png;base64,${blueBuf.toString('base64')}`;
+
+    const payload = [
+      { text: `[img:${redData}]` },
+      { text: `[img:${blueData}]` },
+    ];
+
+    await controller.generateAndUploadImage(device.name, payload);
+
+    expect(captured).not.toBeNull();
+    const out = await Jimp.read(captured!);
+    // both images centered; the top image is blue so the center pixel should be blue
+    const px = out.getPixelColor(120, 120);
+    const rgba = Jimp.intToRGBA(px);
+    expect(rgba.b).toBeGreaterThan(200);
+
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generate calls buildSvgForText for each element and sets transparentBg for overlays', async () => {
+    const devmod = await import('../deviceController');
+    const controller = new devmod.default([device], { afterCommand: false });
+    const spy = jest.spyOn(devmod, 'buildSvgForText');
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+
+    const payload = [
+      { text: 'Bottom', background: '#000000' },
+      { text: 'Top', background: '#ff0000' },
+    ];
+    await controller.generateAndUploadImage(device.name, payload);
+    expect(spy).toHaveBeenCalledTimes(2);
+    // First call transparentBg should be falsy/undefined
+    expect((spy.mock.calls[0][4] as any)?.transparentBg).not.toBeTruthy();
+    // Second call transparentBg should be true
+    expect((spy.mock.calls[1][4] as any)?.transparentBg).toBeTruthy();
+    spy.mockRestore();
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
   test('generate image sets theme and selects image when HTTP returns 200', async () => {
     const controller = new DeviceController([device], { afterCommand: false });
     const uploadMock = jest.fn().mockResolvedValue(true);
@@ -713,10 +772,10 @@ describe('DeviceController IMAGE handling', () => {
     controller.imageUploader = uploadMock;
     const spy = jest.spyOn(devmod, 'buildSvgForText');
     controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
-    await controller.generateAndUploadImage(device.name, 'Simple string');
+  await controller.generateAndUploadImage(device.name, 'Simple string' as any);
     expect(spy).toHaveBeenCalled();
     const args = spy.mock.calls[spy.mock.calls.length - 1];
-    expect(args[4]).toEqual({ halign: 'center', valign: 'center' });
+  expect(args[4]).toEqual(expect.objectContaining({ halign: 'center', valign: 'center' }));
     spy.mockRestore();
     controller.imageUploader = undefined;
     controller.sendGetFn = undefined;

@@ -47,6 +47,22 @@ export type ConfigSchema = {
   verify?: VerifyConfig;
 };
 
+export type ImageGenerateItem = {
+  // text content, or markup (supports [img:...], [color=...], [b]..[/b])
+  text?: string;
+  message?: string;
+  value?: string;
+  background?: string;
+  textColor?: string;
+  fontSize?: number;
+  halign?: 'left' | 'center' | 'right';
+  valign?: 'top' | 'center' | 'bottom';
+  hmargin?: number;
+  vmargin?: number;
+};
+
+export type ImageGeneratePayload = string | ImageGenerateItem | ImageGenerateItem[];
+
 // A function DeviceController can call to publish device state to MQTT.
 // deviceName - the device identifier
 // state - partial state object with brt and/or theme

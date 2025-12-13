@@ -1,12 +1,18 @@
 import { Device } from './types';
-import type { MqttPublishFn } from './types';
+import type { MqttPublishFn, ImageGeneratePayload } from './types';
 import * as httpClient from './httpClient';
 import Jimp from 'jimp';
 import sharp from 'sharp';
 import { log, warn } from './logger';
 
 // Build a 240x240 SVG from the markup text. This is exported so tests can assert layout
-export function buildSvgForText(text: string, bg: string, defaultTextColor: string, fontSize: number, options?: { halign?: 'left' | 'center' | 'right'; valign?: 'top' | 'center' | 'bottom'; hmargin?: number; vmargin?: number }) {
+export function buildSvgForText(
+  text: string,
+  bg: string,
+  defaultTextColor: string,
+  fontSize: number,
+  options?: { halign?: 'left' | 'center' | 'right'; valign?: 'top' | 'center' | 'bottom'; hmargin?: number; vmargin?: number; transparentBg?: boolean }
+) {
   // parse blocks and markup (images, color, bold, italic). This mirrors the code used by
   // generateAndUploadImage but is separated out for testability and clearer newline handling.
   const imgTagRe = /\[img:([^\]]+)\]/gi;
@@ -159,7 +165,9 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
   }
   const svgParts: string[] = [];
   svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">`);
-  svgParts.push(`<rect width="100%" height="100%" fill="${bg}"/>`);
+  // Optionally render background rectangle; when composing multiple layers we often want only
+  // the bottom-most layer to paint a background and subsequent layers to be transparent.
+  if (!options || !options.transparentBg) svgParts.push(`<rect width="100%" height="100%" fill="${bg}"/>`);
   let idx = 0;
   for (const l of lines) {
     if (l.type === 'image') {
@@ -804,68 +812,97 @@ export class DeviceController {
   }
 
   // Generate an image from text/markup and upload it to the device, then select it
-  async generateAndUploadImage(deviceName: string, payload: any): Promise<boolean> {
+  async generateAndUploadImage(deviceName: string, payload: ImageGeneratePayload): Promise<boolean> {
     const device = this.getDevice(deviceName);
     if (!device) {
       warn('Device not found', deviceName);
       return false;
     }
 
-    // normalize payload
-  let text = '';
-    let bg = '#000000';
-    let defaultTextColor = '#ffffff';
-    let fontSize = 28;
-  let halign: 'left' | 'center' | 'right' = 'center';
-  let valign: 'top' | 'center' | 'bottom' = 'center';
-    if (payload && typeof payload === 'object') {
-      text = String(payload.text || payload.message || payload.value || '');
-      if (payload.background) bg = String(payload.background);
-      if (payload.textColor) defaultTextColor = String(payload.textColor);
-      if (payload.fontSize) fontSize = Number(payload.fontSize) || fontSize;
-      if (payload.halign) {
-        const hv = String(payload.halign).toLowerCase();
-        if (hv === 'left' || hv === 'center' || hv === 'right') halign = hv as any;
-      }
-      if (payload.valign) {
-        const vv = String(payload.valign).toLowerCase();
-        if (vv === 'top' || vv === 'center' || vv === 'bottom') valign = vv as any;
-      }
-      // parse optional integer margins for horizontal/vertical
-      var hmargin: number | undefined = undefined;
-      var vmargin: number | undefined = undefined;
-      if (payload.hmargin !== undefined && payload.hmargin !== null) {
-        const hm = Number(payload.hmargin);
-        if (!Number.isNaN(hm)) hmargin = Math.trunc(hm);
-      }
-      if (payload.vmargin !== undefined && payload.vmargin !== null) {
-        const vm = Number(payload.vmargin);
-        if (!Number.isNaN(vm)) vmargin = Math.trunc(vm);
-      }
-    } else {
-      text = String(payload || '');
+    // normalize payload. Accept either a single item or an array of items
+    const items: Array<any> = Array.isArray(payload) ? payload : [payload];
+    // Convert simple string payloads to default object form
+    for (let i = 0; i < items.length; i++) {
+      if (typeof items[i] !== 'object') items[i] = { text: String(items[i] || '') };
     }
 
-    if (!text) {
+    // parse each item into normalized fields
+    const normalized = items.map((it: any) => {
+      const obj = it || {};
+      const text = String(obj.text || obj.message || obj.value || '');
+      const bg = obj.background ? String(obj.background) : '#000000';
+      const defaultTextColor = obj.textColor ? String(obj.textColor) : '#ffffff';
+      const fontSize = obj.fontSize ? Number(obj.fontSize) || 28 : 28;
+      let halign: 'left' | 'center' | 'right' = 'center';
+      let valign: 'top' | 'center' | 'bottom' = 'center';
+      if (obj.halign) {
+        const hv = String(obj.halign).toLowerCase();
+        if (hv === 'left' || hv === 'center' || hv === 'right') halign = hv as any;
+      }
+      if (obj.valign) {
+        const vv = String(obj.valign).toLowerCase();
+        if (vv === 'top' || vv === 'center' || vv === 'bottom') valign = vv as any;
+      }
+      let hmargin: number | undefined = undefined;
+      let vmargin: number | undefined = undefined;
+      if (obj.hmargin !== undefined && obj.hmargin !== null) {
+        const hm = Number(obj.hmargin);
+        if (!Number.isNaN(hm)) hmargin = Math.trunc(hm);
+      }
+      if (obj.vmargin !== undefined && obj.vmargin !== null) {
+        const vm = Number(obj.vmargin);
+        if (!Number.isNaN(vm)) vmargin = Math.trunc(vm);
+      }
+      return { text, bg, defaultTextColor, fontSize, halign, valign, hmargin, vmargin };
+    });
+
+    if (!normalized || normalized.length === 0) {
       warn('IMAGE/GENERATE missing text payload for', deviceName);
       return false;
     }
 
-    // Use shared helper to build SVG string (handles newline and space preservation)
-    log('IMAGE/GENERATE requested', device.name, 'textLen', String(text).length, 'background', bg, 'textColor', defaultTextColor, 'fontSize', fontSize);
-  const devmod = await import('./deviceController');
-  const { svg, usedFontSize } = (devmod as any).buildSvgForText(text, bg, defaultTextColor, fontSize, { halign, valign, hmargin, vmargin });
-    const currentFontSize = usedFontSize;
+  // Use shared helper to build SVG string (handles newline and space preservation)
+
+    const devmod = await import('./deviceController');
+
+    // For arrays, render each layer separately and composite in-order (first = bottommost)
+    const svgItems: Array<{ svg: string; usedFontSize: number }> = [];
+    let totalTextLen = 0;
+    for (let i = 0; i < normalized.length; i++) {
+      const itm = normalized[i];
+      totalTextLen += itm.text.length;
+      const transparentBg = i > 0; // only bottom-most layer should draw a background
+      const res = (devmod as any).buildSvgForText(itm.text, itm.bg, itm.defaultTextColor, itm.fontSize, { halign: itm.halign, valign: itm.valign, hmargin: itm.hmargin, vmargin: itm.vmargin, transparentBg });
+      svgItems.push(res);
+    }
+    const currentFontSize = svgItems[0]?.usedFontSize ?? 28;
 
     try {
-    log('IMAGE/GENERATE rendering SVG', device.name, 'svgLen', Buffer.byteLength(svg), 'fontSize', currentFontSize);
-    await this.publishImageStatus(device.name, { stage: 'rendering', textLen: String(text).length });
-      // render SVG to JPEG buffer with any device-specified transforms
+    // logging: total text length and number of layers
+    log('IMAGE/GENERATE rendering', device.name, 'layers', svgItems.length, 'totalTextLen', totalTextLen);
+    await this.publishImageStatus(device.name, { stage: 'rendering', layers: svgItems.length, textLen: totalTextLen });
+      // render SVG layers to PNG buffers and composite
     const flipV = device.image && device.image.flip && device.image.flip.vertical === true;
     const flipH = device.image && device.image.flip && device.image.flip.horizontal === true;
   const rotateDeg = Number((device.image && typeof (device.image as any).rotate === 'number') ? (device.image as any).rotate : 0);
   log('IMAGE/GENERATE transforms', device.name, { rotateDeg, flipV, flipH });
-      let s = sharp(Buffer.from(svg)).resize(240, 240);
+      // Render each svg into PNG buffers with alpha so they can be composed.
+      const pngBuffers: Buffer[] = [];
+      for (let i = 0; i < svgItems.length; i++) {
+        const sv = svgItems[i].svg;
+        const png = await sharp(Buffer.from(sv)).resize(240, 240).png().toBuffer();
+        pngBuffers.push(png);
+      }
+      // Composite layers: first item is base, subsequent are overlaid in order
+      let composedPng = pngBuffers[0];
+      if (pngBuffers.length > 1) {
+        for (let i = 1; i < pngBuffers.length; i++) {
+          composedPng = await sharp(composedPng).composite([{ input: pngBuffers[i], blend: 'over' }]).png().toBuffer();
+        }
+      }
+      // Convert to JPEG: flatten any transparency to the first layer background (or black)
+      const baseBg = normalized[0].bg || '#000000';
+      let s = sharp(composedPng).flatten({ background: baseBg }).resize(240, 240);
       s = applyTransformsToSharp(s, rotateDeg, flipV, flipH);
       const outBuf = await s.jpeg({ quality: 90 }).toBuffer();
       log('IMAGE/GENERATE rendered', device.name, 'bytes', outBuf.length);
