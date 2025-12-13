@@ -16,122 +16,171 @@ export function buildSvgForText(
   // parse blocks and markup (images, color, bold, italic). This mirrors the code used by
   // generateAndUploadImage but is separated out for testability and clearer newline handling.
   const imgTagRe = /\[img:([^\]]+)\]/gi;
-  const blocks: Array<{ type: 'text' | 'image'; text?: string; src?: string }> = [];
+  const blocks: Array<{ type: 'text' | 'image'; text?: string; src?: string; width?: number; height?: number }> = [];
   let cursor = 0;
   let m: RegExpExecArray | null;
   while ((m = imgTagRe.exec(text)) !== null) {
     const idx = m.index;
     if (idx > cursor) blocks.push({ type: 'text', text: text.slice(cursor, idx) });
-    blocks.push({ type: 'image', src: m[1] });
+    // Parse optional size spec for inline images: `datauri|WxH` or `datauri|W` (square)
+    let srcRaw = m[1];
+    let imgW: number | undefined = undefined;
+    let imgH: number | undefined = undefined;
+    const pipeIdx = srcRaw.indexOf('|');
+    if (pipeIdx !== -1) {
+      const sizePart = srcRaw.slice(pipeIdx + 1);
+      srcRaw = srcRaw.slice(0, pipeIdx);
+      const dims = sizePart.split('x');
+      const tw = Number(dims[0]);
+      if (!Number.isNaN(tw) && Number.isFinite(tw) && tw > 0) imgW = Math.trunc(tw);
+      if (dims.length > 1) {
+        const th = Number(dims[1]);
+        if (!Number.isNaN(th) && Number.isFinite(th) && th > 0) imgH = Math.trunc(th);
+      }
+      if (imgW && !imgH) imgH = imgW;
+      // clamp to image bounds
+      if (imgW) imgW = Math.max(1, Math.min(240, imgW));
+      if (imgH) imgH = Math.max(1, Math.min(240, imgH));
+    }
+    blocks.push({ type: 'image', src: srcRaw, width: imgW, height: imgH });
     cursor = idx + m[0].length;
   }
   if (cursor < text.length) blocks.push({ type: 'text', text: text.slice(cursor) });
 
-  const parseBoldItalic = (s: string, color: string) => {
-    const spans: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
-    const bRe = /\[b\]([\s\S]*?)\[\/b\]/gi;
-    let pos = 0;
-    let mm: RegExpExecArray | null;
-    while ((mm = bRe.exec(s)) !== null) {
-      const i = mm.index;
-      if (i > pos) spans.push({ text: s.slice(pos, i), color });
-      spans.push({ text: mm[1], color, bold: true });
-      pos = i + mm[0].length;
-    }
-    if (pos < s.length) spans.push({ text: s.slice(pos), color });
-    const final: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
-    for (const sp of spans) {
-      const s2 = sp.text;
+  // starting font size (may be reduced to fit vertically)
+  let currentFontSize = Math.trunc(fontSize) || 28;
+
+    // Parse [b]...[/b] and [i]...[/i] inside a (possibly colored) run
+    const parseBoldItalic = (s: string, color: string) => {
+      const out: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
+      const bRe = /\[b\]([\s\S]*?)\[\/b\]/gi;
+      let pos = 0;
+      let mm: RegExpExecArray | null;
+      while ((mm = bRe.exec(s)) !== null) {
+        const i = mm.index;
+        if (i > pos) out.push(...parseItalicSpans(s.slice(pos, i), color, false));
+        out.push(...parseItalicSpans(mm[1], color, true));
+        pos = i + mm[0].length;
+      }
+      if (pos < s.length) out.push(...parseItalicSpans(s.slice(pos), color, false));
+      return out;
+    };
+
+    const parseItalicSpans = (s: string, color: string, bold: boolean) => {
+      const final: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
       const iRe = /\[i\]([\s\S]*?)\[\/i\]/gi;
       let p = 0;
       let mm2: RegExpExecArray | null;
-      while ((mm2 = iRe.exec(s2)) !== null) {
+      while ((mm2 = iRe.exec(s)) !== null) {
         const ii = mm2.index;
-        if (ii > p) final.push({ text: s2.slice(p, ii), color: sp.color, bold: sp.bold });
-        final.push({ text: mm2[1], color: sp.color, bold: sp.bold, italic: true });
+        if (ii > p) final.push({ text: s.slice(p, ii), color, bold });
+        final.push({ text: mm2[1], color, bold, italic: true });
         p = ii + mm2[0].length;
       }
-      if (p < s2.length) final.push({ text: s2.slice(p), color: sp.color, bold: sp.bold });
-    }
-    return final;
-  };
+      if (p < s.length) final.push({ text: s.slice(p), color, bold });
+      return final;
+    };
 
-  const parseStyledSpans = (s: string, baseColor: string) => {
-    const spans: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
-    const colorRe = /\[color=([^\]]+)\]([\s\S]*?)\[\/color\]/gi;
-    let pos = 0;
-    let mm: RegExpExecArray | null;
-    while ((mm = colorRe.exec(s)) !== null) {
-      const i = mm.index;
-      if (i > pos) {
-        const before = s.slice(pos, i);
-        spans.push(...parseBoldItalic(before, baseColor));
+    // Parse [color=#rrggbb]...[/color] blocks and delegate bold/italic parsing
+    const parseStyledSpans = (s: string, baseColor: string) => {
+      const spans: Array<{ text: string; color?: string; bold?: boolean; italic?: boolean }> = [];
+      const colorRe = /\[color=([^\]]+)\]([\s\S]*?)\[\/color\]/gi;
+      let pos = 0;
+      let mm: RegExpExecArray | null;
+      while ((mm = colorRe.exec(s)) !== null) {
+        const i = mm.index;
+        if (i > pos) spans.push(...parseBoldItalic(s.slice(pos, i), baseColor));
+        spans.push(...parseBoldItalic(mm[2], mm[1]));
+        pos = i + mm[0].length;
       }
-      const col = mm[1];
-      spans.push(...parseBoldItalic(mm[2], col));
-      pos = i + mm[0].length;
-    }
-    if (pos < s.length) spans.push(...parseBoldItalic(s.slice(pos), baseColor));
-    return spans;
-  };
+      if (pos < s.length) spans.push(...parseBoldItalic(s.slice(pos), baseColor));
+      return spans;
+    };
 
-  // Layout: assemble lines and images into vertical flow, centering each element
-  const SVG_WIDTH = 240;
-  const SVG_HEIGHT = 240;
-  let currentFontSize = fontSize;
+    // Layout builder: tokenizes inline images and wraps into lines
+    const SVG_WIDTH = 240;
+    const SVG_HEIGHT = 240;
+    const buildLayout = (fSize: number) => {
+      const lines: Array<{ type: 'text'; spans: any[] } | { type: 'image'; src: string; width?: number; height?: number } > = [];
+      const maxTextWidth = SVG_WIDTH - 8; // margin 4px each side
+      const charWidth = fSize * 0.6;
 
-  // Function to build layout and compute total height (supports forced newlines inside spans)
-  const buildLayout = (fSize: number) => {
-    const lines: Array<{ type: 'text'; spans: any[] } | { type: 'image'; src: string } > = [];
-    const maxTextWidth = SVG_WIDTH - 8; // margin 4px each side
-    const charWidth = fSize * 0.6;
+      // Tokenize blocks into inline tokens and wrap into token lines
+      const tokenLines: Array<any[]> = [];
+      let curLineTokens: any[] = [];
+      let curLineWidth = 0;
 
-    for (const blk of blocks) {
-      if (blk.type === 'image') {
-        lines.push({ type: 'image', src: blk.src! });
-        continue;
-      }
-      const spans = parseStyledSpans(blk.text || '', defaultTextColor);
-      let curLine: Array<any> = [];
-      let curWidth = 0;
-      for (const sp of spans) {
-        // Respect explicit newlines inside spans: split on \n and force line breaks
-        const segments = sp.text.split('\n');
-        for (let si = 0; si < segments.length; si++) {
-          const seg = segments[si];
-          const words = seg.split(/(\s+)/);
-          for (const w of words) {
-            const wLen = w.length * charWidth;
-            if (curWidth + wLen > maxTextWidth && curLine.length > 0) {
-              lines.push({ type: 'text', spans: curLine });
-              curLine = [];
-              curWidth = 0;
-            }
-            if (w.length > 0) {
-              curLine.push({ text: w, color: sp.color, bold: sp.bold, italic: sp.italic });
-              curWidth += wLen;
-            }
+      for (const blk of blocks) {
+        if (blk.type === 'image') {
+          const inlineDefault = Math.max(1, Math.trunc(fSize));
+          const imgW = typeof blk.width === 'number' ? blk.width : inlineDefault;
+          const imgH = typeof blk.height === 'number' ? blk.height : imgW;
+          if (curLineWidth + imgW > maxTextWidth && curLineTokens.length > 0) {
+            tokenLines.push(curLineTokens);
+            curLineTokens = [];
+            curLineWidth = 0;
           }
-          // if there was a newline here (segment not last) force a new line
-          if (si < segments.length - 1) {
-            // push current line (even if empty -> blank line)
-            lines.push({ type: 'text', spans: curLine });
-            curLine = [];
-            curWidth = 0;
+          curLineTokens.push({ type: 'image', src: blk.src, width: imgW, height: imgH, explicitSize: !!blk.width || !!blk.height });
+          curLineWidth += imgW;
+          continue;
+        }
+
+        const spansLocal = parseStyledSpans(blk.text || '', defaultTextColor);
+        for (const sp of spansLocal) {
+          const segments = sp.text.split('\n');
+          for (let si = 0; si < segments.length; si++) {
+            const seg = segments[si];
+            const words = seg.split(/(\s+)/);
+            for (const w of words) {
+              const wLen = w.length * charWidth;
+              if (curLineWidth + wLen > maxTextWidth && curLineTokens.length > 0) {
+                tokenLines.push(curLineTokens);
+                curLineTokens = [];
+                curLineWidth = 0;
+              }
+              if (w.length > 0) {
+                curLineTokens.push({ type: 'text', text: w, color: sp.color, bold: sp.bold, italic: sp.italic, width: wLen });
+                curLineWidth += wLen;
+              }
+            }
+            if (si < segments.length - 1) {
+              tokenLines.push(curLineTokens);
+              curLineTokens = [];
+              curLineWidth = 0;
+            }
           }
         }
       }
-      if (curLine.length > 0) lines.push({ type: 'text', spans: curLine });
-    }
-    const lineHeight = Math.round(fSize * 1.2);
-    const baselineOffset = lineHeight - (lineHeight / 4);
-    let totalH = 0;
-    for (const l of lines) {
-      if (l.type === 'text') totalH += lineHeight;
-      else totalH += Math.min(96, SVG_HEIGHT / 3);
-    }
-    return { lines, totalH, lineHeight };
-  };
+      if (curLineTokens.length > 0) tokenLines.push(curLineTokens);
+
+      // Convert token lines into final 'lines' array, preserving inline image tokens inside text lines
+      for (const tline of tokenLines) {
+        if (tline.length === 1 && tline[0].type === 'image') {
+          const img = tline[0];
+          lines.push({ type: 'image', src: img.src, width: img.width, height: img.height });
+        } else {
+          const spansOut: any[] = [];
+          for (const tok of tline) {
+            if (tok.type === 'text') spansOut.push({ text: tok.text, color: tok.color, bold: tok.bold, italic: tok.italic, width: tok.width });
+            else if (tok.type === 'image') spansOut.push({ img: true, src: tok.src, width: tok.width, height: tok.height, explicitSize: tok.explicitSize });
+          }
+          lines.push({ type: 'text', spans: spansOut });
+        }
+      }
+
+      const lineHeight = Math.round(fSize * 1.2);
+      // baseline offset from the top of the line to the text baseline
+      const baselineOffset = lineHeight - (lineHeight / 4);
+      let totalH = 0;
+      for (const l of lines) {
+        if (l.type === 'text') totalH += lineHeight;
+        else {
+          const ih = (l as any).height || 96;
+          totalH += Math.min(ih, SVG_HEIGHT / 3);
+        }
+      }
+      return { lines, totalH, lineHeight };
+    };
 
   // Reduce font size if layout height exceeds image height
   let layout = buildLayout(currentFontSize);
@@ -171,46 +220,91 @@ export function buildSvgForText(
   let idx = 0;
   for (const l of lines) {
     if (l.type === 'image') {
-      const imgSize = 96;
       const defaultMargin = 4;
       const imgMargin = typeof hmarginOpt === 'number' ? hmarginOpt : defaultMargin;
+      const imgW = (l as any).width || 96;
+      const imgH = (l as any).height || 96;
       let x: number;
       if (halign === 'left') x = imgMargin;
-      else if (halign === 'right') x = Math.round(SVG_WIDTH - imgSize - imgMargin);
-      else x = Math.round((SVG_WIDTH - imgSize) / 2 + (typeof hmarginOpt === 'number' ? hmarginOpt : 0));
-      const yImg = Math.round(y - imgSize / 2);
-      const src = l.src;
-      svgParts.push(`<image x="${x}" y="${yImg}" width="${imgSize}" height="${imgSize}" href="${src}" />`);
-      y += imgSize + 6;
+      else if (halign === 'right') x = Math.round(SVG_WIDTH - imgW - imgMargin);
+      else x = Math.round((SVG_WIDTH - imgW) / 2 + (typeof hmarginOpt === 'number' ? hmarginOpt : 0));
+      const yImg = Math.round(y - imgH / 2);
+      const src = (l as any).src;
+      svgParts.push(`<image x="${x}" y="${yImg}" width="${imgW}" height="${imgH}" href="${src}" />`);
+      y += imgH + 6;
     } else {
-      let tspanParts = '';
-      for (const sp of l.spans) {
-        const fill = sp.color || defaultTextColor;
-        const fontWeight = sp.bold ? '700' : '400';
-        const fontStyle = sp.italic ? 'italic' : 'normal';
-        const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        tspanParts += `<tspan fill="${fill}" font-weight="${fontWeight}" font-style="${fontStyle}">${esc(sp.text)}</tspan>`;
+      const tokens = l.spans as any[];
+      const hasImage = tokens.some((t) => t.img);
+      if (!hasImage) {
+        // Simple single-text line: preserve previous behavior (single <text> with anchor)
+        let tspanParts = '';
+        for (const sp of tokens) {
+          const fill = sp.color || defaultTextColor;
+          const fontWeight = sp.bold ? '700' : '400';
+          const fontStyle = sp.italic ? 'italic' : 'normal';
+          const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          tspanParts += `<tspan fill="${fill}" font-weight="${fontWeight}" font-style="${fontStyle}">${esc(sp.text)}</tspan>`;
+        }
+        // choose x & anchor based on horizontal alignment
+        const defaultMargin = 4;
+        const margin = typeof hmarginOpt === 'number' ? hmarginOpt : defaultMargin;
+        let xVal: number | string = SVG_WIDTH / 2;
+        let anchor = 'middle';
+        if (halign === 'left') {
+          xVal = margin;
+          anchor = 'start';
+        } else if (halign === 'right') {
+          xVal = SVG_WIDTH - margin;
+          anchor = 'end';
+        } else if (halign === 'center' && typeof hmarginOpt === 'number') {
+          xVal = Math.round(SVG_WIDTH / 2 + hmarginOpt);
+        }
+        svgParts.push(`<text xml:space="preserve" x="${xVal}" y="${y}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${currentFontSize}" text-anchor="${anchor}">${tspanParts}</text>`);
+        y += lineHeight;
+      } else {
+        // Line contains inline images: compute absolute positions for each token
+        const totalWidth = tokens.reduce((acc, t) => acc + (t.width || 0), 0);
+        const defaultMargin = 4;
+        const margin = typeof hmarginOpt === 'number' ? hmarginOpt : defaultMargin;
+        let startX: number;
+        if (halign === 'left') startX = margin;
+        else if (halign === 'right') startX = Math.round(SVG_WIDTH - margin - totalWidth);
+        else startX = Math.round((SVG_WIDTH - totalWidth) / 2 + (typeof hmarginOpt === 'number' ? hmarginOpt : 0));
+
+        let cx = startX;
+        for (let ti = 0; ti < tokens.length; ) {
+          const tok = tokens[ti];
+          if (tok.img) {
+            const imgW = tok.width || 16;
+            const imgH = tok.height || imgW;
+            // Align inline images to the text baseline for better visual fit.
+            // Approximate descent as ~20% of font size and place image bottom at baseline-descent.
+            const descent = Math.round(currentFontSize * 0.2);
+            const yImg = Math.round(y - imgH + descent);
+            const src = tok.src;
+            svgParts.push(`<image x="${cx}" y="${yImg}" width="${imgW}" height="${imgH}" href="${src}" />`);
+            cx += imgW;
+            ti++;
+          } else {
+            // gather consecutive text tokens
+            let groupWidth = 0;
+            let tspanParts = '';
+            const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            while (ti < tokens.length && !tokens[ti].img) {
+              const sp = tokens[ti];
+              const fill = sp.color || defaultTextColor;
+              const fontWeight = sp.bold ? '700' : '400';
+              const fontStyle = sp.italic ? 'italic' : 'normal';
+              tspanParts += `<tspan fill="${fill}" font-weight="${fontWeight}" font-style="${fontStyle}">${esc(sp.text)}</tspan>`;
+              groupWidth += sp.width || 0;
+              ti++;
+            }
+            svgParts.push(`<text xml:space="preserve" x="${cx}" y="${y}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${currentFontSize}" text-anchor="start">${tspanParts}</text>`);
+            cx += groupWidth;
+          }
+        }
+        y += lineHeight;
       }
-      // xml:space="preserve" keeps multiple spaces from collapsing
-      // xml:space="preserve" keeps multiple spaces from collapsing
-      // choose x & anchor based on horizontal alignment
-      const defaultMargin = 4;
-      const margin = typeof hmarginOpt === 'number' ? hmarginOpt : defaultMargin;
-      let xVal: number | string = SVG_WIDTH / 2;
-      let anchor = 'middle';
-      if (halign === 'left') {
-        // left margin: distance from left edge
-        xVal = margin;
-        anchor = 'start';
-      } else if (halign === 'right') {
-        // right margin: distance from right edge
-        xVal = SVG_WIDTH - margin;
-        anchor = 'end';
-      } else if (halign === 'center' && typeof hmarginOpt === 'number') {
-        xVal = Math.round(SVG_WIDTH / 2 + hmarginOpt);
-      }
-  svgParts.push(`<text xml:space="preserve" x="${xVal}" y="${y}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${currentFontSize}" text-anchor="${anchor}">${tspanParts}</text>`);
-      y += lineHeight;
     }
     idx++;
   }

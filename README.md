@@ -164,15 +164,18 @@ You can programmatically generate a 240×240 image and upload it to the device b
 Payloads supported:
 
 - Plain string: treated as the text to render.
- - JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom", "hmargin": 0, "vmargin": 0 }` (all fields optional)
- - JSON array: An array of the JSON objects above. The order of the array controls z-order (first is bottom-most, last is top-most). This allows rendering multiple pieces of text or overlapping inline images in specified positions.
+- JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom", "hmargin": 0, "vmargin": 0 }` (all fields optional)
+- JSON array: An array of the JSON objects above. The order of the array controls z-order (first is bottom-most, last is top-most). This allows rendering multiple pieces of text or overlapping inline images in specified positions.
 
 Markup supported in the `text` string:
 
 - `[color=#rrggbb]...[/color]` — set a hex color for the enclosed text (eg. `#ff0000`).
 - `[b]...[/b]` — bold text.
 - `[i]...[/i]` — italic text.
-- `[img:data-uri]` — inline image using a data URI (for example `data:image/png;base64,...`). Inline images are centered and rendered at ~96×96.
+- `[img:data-uri]` — inline image using a data URI (for example `data:image/png;base64,...`). Inline images are centered and rendered at ~96×96 by default.
+  Optional size suffix: you can specify `|WxH` or `|W` after the data URI to control inline render size (pixels). Examples:
+   `[img:data:image/png;base64,...|48]` — renders inline image at 48×48.
+   `[img:data:image/png;base64,...|96x32]` — renders inline image at 96×32.
 - Use `\n` (or real line breaks in JSON strings) to create new lines.
 
 - `halign` - Horizontal alignment for text and inline images (default `center`). Values: `left`, `center`, `right`.

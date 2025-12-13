@@ -445,6 +445,113 @@ describe('DeviceController IMAGE handling', () => {
     controller.sendGetFn = undefined;
   });
 
+  test('buildSvgForText respects inline image size in markup (widthxheight)', async () => {
+    // create a small inline image
+    const icon = await new Jimp(32, 32, 0x00ff00ff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+    const svgObj = buildSvgForText(`A [img:${dataUri}|24x12] B`, '#000000', '#ffffff', 28);
+    expect(svgObj.svg.includes('width="24"')).toBeTruthy();
+    expect(svgObj.svg.includes('height="12"')).toBeTruthy();
+  });
+
+  test('buildSvgForText respects inline image size with single dimension (square)', async () => {
+    const icon = await new Jimp(32, 32, 0xff00ffff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+    const svgObj = buildSvgForText(`X [img:${dataUri}|16] Y`, '#000000', '#ffffff', 28);
+    expect(svgObj.svg.includes('width="16"')).toBeTruthy();
+    expect(svgObj.svg.includes('height="16"')).toBeTruthy();
+  });
+
+  test('buildSvgForText default inline image size uses font size', async () => {
+    const icon = await new Jimp(32, 32, 0xff00ffff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+    const svgObj = buildSvgForText(`Hello [img:${dataUri}] world`, '#000000', '#ffffff', 28);
+    // default inline size should match the provided font-size (28)
+    expect(svgObj.svg.includes('width="28"')).toBeTruthy();
+    expect(svgObj.svg.includes('height="28"')).toBeTruthy();
+  });
+
+  test('inline image appears between surrounding text (same line)', async () => {
+    const icon = await new Jimp(32, 32, 0xff00ffff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+  const svg = buildSvgForText(`<<A>> [img:${dataUri}] <<B>>`, '#000000', '#ffffff', 28).svg;
+  const idxA = svg.indexOf('&lt;&lt;A&gt;&gt;');
+  const idxImg = svg.indexOf('<image');
+  const idxB = svg.indexOf('&lt;&lt;B&gt;&gt;');
+  expect(idxA).toBeGreaterThanOrEqual(0);
+  expect(idxImg).toBeGreaterThan(idxA);
+  expect(idxB).toBeGreaterThan(idxImg);
+  });
+
+  test('inline image vertical alignment (default size) aligns to baseline', async () => {
+    const icon = await new Jimp(32, 32, 0xff00ffff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+    // Use top valign and a small vmargin to get deterministic Y
+    const fontSize = 28;
+    const svg = buildSvgForText(`X [img:${dataUri}] Y`, '#000000', '#ffffff', fontSize, { valign: 'top', vmargin: 4 }).svg;
+    const m = svg.match(/<image[^>]*y="([^"]+)"/);
+    expect(m).not.toBeNull();
+    const yVal = Number(m![1]);
+    const lineHeight = Math.round(fontSize * 1.2);
+    const baselineOffset = lineHeight - (lineHeight / 4);
+    const y = 4 + baselineOffset;
+    const descent = Math.round(fontSize * 0.2);
+    const expected = Math.round(y - fontSize + descent);
+    expect(yVal).toBe(expected);
+  });
+
+  test('inline image vertical alignment (explicit height) aligns to baseline', async () => {
+    const icon = await new Jimp(32, 32, 0xff00ffff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+    const fontSize = 28;
+    const svg = buildSvgForText(`X [img:${dataUri}|24x12] Y`, '#000000', '#ffffff', fontSize, { valign: 'top', vmargin: 4 }).svg;
+    const m = svg.match(/<image[^>]*y="([^"]+)"/);
+    expect(m).not.toBeNull();
+    const yVal = Number(m![1]);
+    const lineHeight = Math.round(fontSize * 1.2);
+    const baselineOffset = lineHeight - (lineHeight / 4);
+    const y = 4 + baselineOffset;
+    const descent = Math.round(fontSize * 0.2);
+    const imgH = 12;
+    const expected = Math.round(y - imgH + descent);
+    expect(yVal).toBe(expected);
+  });
+
+  test('generateAndUploadImage calls buildSvgForText for each array item and width/height present for images', async () => {
+    const devmod = await import('../deviceController');
+    const controller = new devmod.default([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+    const spy = jest.spyOn(devmod, 'buildSvgForText');
+
+    // create icon data URI
+    const icon = await new Jimp(32, 32, 0x0000ffff);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+    const payload = [
+      { text: `[img:${dataUri}|24x10]` },
+      { text: `[img:${dataUri}|48]` },
+    ];
+    await controller.generateAndUploadImage(device.name, payload as any);
+    expect(spy).toHaveBeenCalledTimes(2);
+    const r0 = spy.mock.results[spy.mock.results.length - 2].value as any;
+    const r1 = spy.mock.results[spy.mock.results.length - 1].value as any;
+    expect(r0.svg.includes('width="24"')).toBeTruthy();
+    expect(r0.svg.includes('height="10"')).toBeTruthy();
+    expect(r1.svg.includes('width="48"')).toBeTruthy();
+    expect(r1.svg.includes('height="48"')).toBeTruthy();
+    spy.mockRestore();
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
   test('generate image publishes status events', async () => {
     const controller = new DeviceController([device], { afterCommand: false });
     const uploadMock = jest.fn().mockResolvedValue(true);
