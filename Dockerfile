@@ -23,6 +23,12 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --production
 
+# Ensure fontconfig and a default TrueType font are installed so SVG text renders correctly
+# when running in the minimal Alpine container. This prevents missing-glyph squares due to
+# absent fonts (ASCII and extended characters).
+RUN apk add --no-cache fontconfig ttf-dejavu ttf-freefont
+RUN fc-cache -f -v || true
+
 # Copy built files from build stage
 COPY --from=build /app/dist ./dist
 

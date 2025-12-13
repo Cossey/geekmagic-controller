@@ -9,6 +9,19 @@ Quick start:
 - Build: `npm run build` and run: `npm run start`
 - Test: `npm test`
 
+## Fonts & Docker
+
+When running in a minimal Linux container (for example `node:alpine`), SVG text rendering can show 'tofu' (empty squares) if system fonts are not available. If you see squares where text should be when using the `IMAGE/GENERATE` feature inside Docker, ensure the runtime container includes fontconfig and at least one TrueType font like DejaVu.
+
+For the official Docker image included in this repo, the runtime stage installs `fontconfig` and `ttf-dejavu` and runs `fc-cache` so Sharp can render text correctly. If you build your own image or use another base, ensure you install these packages and update font cache, for example:
+
+```sh
+apk add --no-cache fontconfig ttf-dejavu ttf-freefont
+fc-cache -f -v
+```
+
+If you need additional language support (e.g., Chinese/Japanese/Korean), include a CJK font such as Noto CJK fonts in your image.
+
 The YAML structure is shown in `config.yaml`. The repo accepts two forms for `devices`:
 
 - Array form (existing style):

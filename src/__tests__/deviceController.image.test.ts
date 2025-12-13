@@ -463,6 +463,11 @@ describe('DeviceController IMAGE handling', () => {
     expect(topY).toBeLessThan(bottomY);
   });
 
+  test('buildSvgForText prefers DejaVu Sans font-family', () => {
+    const svgObj = buildSvgForText('Hello', '#000000', '#ffffff', 28);
+    expect(svgObj.svg.includes('font-family="DejaVu Sans, Arial, sans-serif"')).toBeTruthy();
+  });
+
   test('generateAndUploadImage passes halign/valign to buildSvgForText', async () => {
     const devmod = await import('../deviceController');
     const controller = new devmod.default([device], { afterCommand: false });
@@ -476,6 +481,47 @@ describe('DeviceController IMAGE handling', () => {
     expect(args[0]).toBe('Test');
     expect(args[4]).toEqual({ halign: 'left', valign: 'top' });
     spy.mockRestore();
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generate image with unicode characters renders text', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    let captured: Buffer | null = null;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => {
+      captured = buf;
+      return true;
+    });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+
+    // Use em-dash and some non-ascii glyphs as a stress test for fonts
+    const text = 'Café — Hello — 世界';
+    await controller.generateAndUploadImage(device.name, { text });
+
+    expect(captured).not.toBeNull();
+    const out = await Jimp.read(captured!);
+    expect(out.getWidth()).toBe(240);
+    expect(out.getHeight()).toBe(240);
+    // search a small center area for any non-background pixel (not pure black)
+    const found = (() => {
+      const cx = Math.floor(out.getWidth() / 2);
+      const cy = Math.floor(out.getHeight() / 2);
+      for (let dx = -8; dx <= 8; dx++) {
+        for (let dy = -8; dy <= 8; dy++) {
+          const px = cx + dx;
+          const py = cy + dy;
+          if (px < 0 || py < 0 || px >= out.getWidth() || py >= out.getHeight()) continue;
+          const c = out.getPixelColor(px, py);
+          const rgba = Jimp.intToRGBA(c);
+          // white text has r~255,g~255,b~255; background (black) has r,g,b all near 0
+          if (rgba.r > 50 || rgba.g > 50 || rgba.b > 50) return true;
+        }
+      }
+      return false;
+    })();
+    expect(found).toBeTruthy();
+
     controller.imageUploader = undefined;
     controller.sendGetFn = undefined;
   });

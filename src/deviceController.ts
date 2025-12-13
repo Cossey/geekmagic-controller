@@ -186,7 +186,7 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
         xVal = SVG_WIDTH - margin;
         anchor = 'end';
       }
-      svgParts.push(`<text xml:space="preserve" x="${xVal}" y="${y}" font-family="Arial, sans-serif" font-size="${currentFontSize}" text-anchor="${anchor}">${tspanParts}</text>`);
+  svgParts.push(`<text xml:space="preserve" x="${xVal}" y="${y}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${currentFontSize}" text-anchor="${anchor}">${tspanParts}</text>`);
       y += lineHeight;
     }
     idx++;
