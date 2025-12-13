@@ -6,6 +6,13 @@ devices:
     image:
       oversize: resize
       cropposition: center
+      # Optional transformations applied to images before upload
+      # flip: apply flips before upload (default false)
+      flip:
+        vertical: false
+        horizontal: false
+      # rotation degrees applied before upload; allowed values: 0, 90, 180, 270
+      rotate: 0
 
 mqtt:
   server: 127.0.0.1

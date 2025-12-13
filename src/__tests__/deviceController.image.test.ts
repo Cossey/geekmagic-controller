@@ -413,6 +413,128 @@ describe('DeviceController IMAGE handling', () => {
     controller.sendGetFn = undefined;
   });
 
+  test('processImageAndUpload respects rotate and flip from device config', async () => {
+    // Create a device config with flip/rotate settings
+    const d = { name: 'lounge-tv', type: 'smalltv-ultra', host: '192.168.1.50', image: { oversize: 'resize', rotate: 90 } } as any;
+    const controller = new DeviceController([d], { afterCommand: false });
+    // Create 240x240 black image with a 5x5 red square at top-left
+    const img = await new Jimp(240, 240, 0x000000ff);
+    for (let px = 0; px < 5; px++) for (let py = 0; py < 5; py++) img.setPixelColor(Jimp.rgbaToInt(255, 0, 0, 255), px, py);
+    const dataUri = await img.getBase64Async(Jimp.MIME_PNG);
+    let captured: Buffer | null = null;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => {
+      captured = buf; return true;
+    });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+    await controller.handleCommand(d.name, 'IMAGE', dataUri);
+    // Read captured buffer and verify that the red block moved to the right (rotation 90 cw)
+    expect(captured).not.toBeNull();
+    const out = await Jimp.read(captured!);
+    // original center was at (2,2) -> after rotate 90 cw it's at (2, 239 - 2) -> (2, 237)
+    const pixel = out.getPixelColor(237, 2);
+    const rgba = Jimp.intToRGBA(pixel);
+    expect(rgba.r).toBeGreaterThan(200);
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('processImageAndUpload respects horizontal flip', async () => {
+    const d = { name: 'lounge-tv', type: 'smalltv-ultra', host: '192.168.1.50', image: { oversize: 'resize', flip: { horizontal: true } } } as any;
+    const controller = new DeviceController([d], { afterCommand: false });
+    // create a 240x240 black image with a red 6x6 square at top-left
+    const img = await new Jimp(240, 240, 0x000000ff);
+    for (let px = 0; px < 6; px++) for (let py = 0; py < 6; py++) img.setPixelColor(Jimp.rgbaToInt(255, 0, 0, 255), px, py);
+    const dataUri = await img.getBase64Async(Jimp.MIME_PNG);
+    let captured: Buffer | null = null;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => { captured = buf; return true; });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+    await controller.handleCommand(d.name, 'IMAGE', dataUri);
+    expect(captured).not.toBeNull();
+    const out = await Jimp.read(captured!);
+    // original center of red is at (2,2) -> after horizontal flip it should be at (239 - 2, 2) = (237,2)
+    const pix = out.getPixelColor(237, 2);
+    const rgba = Jimp.intToRGBA(pix);
+    expect(rgba.r).toBeGreaterThan(200);
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('processImageAndUpload respects vertical flip', async () => {
+    const d = { name: 'lounge-tv', type: 'smalltv-ultra', host: '192.168.1.50', image: { oversize: 'resize', flip: { vertical: true } } } as any;
+    const controller = new DeviceController([d], { afterCommand: false });
+    // create a 240x240 black image with a red 6x6 square at top-left
+    const img = await new Jimp(240, 240, 0x000000ff);
+    for (let px = 0; px < 6; px++) for (let py = 0; py < 6; py++) img.setPixelColor(Jimp.rgbaToInt(255, 0, 0, 255), px, py);
+    const dataUri = await img.getBase64Async(Jimp.MIME_PNG);
+    let captured: Buffer | null = null;
+    const uploadMock = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => { captured = buf; return true; });
+    controller.imageUploader = uploadMock;
+    controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+    await controller.handleCommand(d.name, 'IMAGE', dataUri);
+    expect(captured).not.toBeNull();
+    const out = await Jimp.read(captured!);
+    // original center of red is at (2,2) -> after vertical flip it should be at (2, 239 - 2) = (2, 237)
+    const pix = out.getPixelColor(2, 237);
+    const rgba = Jimp.intToRGBA(pix);
+    expect(rgba.r).toBeGreaterThan(200);
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
+  test('generateAndUploadImage respects rotate from device config (compare rotated vs non-rotated outputs)', async () => {
+    // Create two devices: one with rotate 0, one with rotate 180
+    const dA = { name: 'lounge-tv', type: 'smalltv-ultra', host: '192.168.1.50', image: { rotate: 0 } } as any;
+    const dB = { name: 'lounge-tv-rot', type: 'smalltv-ultra', host: '192.168.1.50', image: { rotate: 180 } } as any;
+    const controllerA = new DeviceController([dA], { afterCommand: false });
+    const controllerB = new DeviceController([dB], { afterCommand: false });
+    let capturedA: Buffer | null = null;
+    let capturedB: Buffer | null = null;
+    const uploadA = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => { capturedA = buf; return true; });
+    const uploadB = jest.fn().mockImplementation(async (_d: any, buf: Buffer, filename: string) => { capturedB = buf; return true; });
+    controllerA.imageUploader = uploadA;
+    controllerB.imageUploader = uploadB;
+    controllerA.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+    controllerB.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
+
+    // Use an inline icon placed at the top-left
+    const icon = await new Jimp(32, 32, 0x000000ff);
+    for (let px = 0; px < 6; px++) for (let py = 0; py < 6; py++) icon.setPixelColor(Jimp.rgbaToInt(255, 0, 0, 255), px, py);
+    const iconData = (await icon.getBufferAsync(Jimp.MIME_PNG)).toString('base64');
+    const dataUri = `data:image/png;base64,${iconData}`;
+    const markup = `Test\n[img:${dataUri}]`;
+
+    await controllerA.generateAndUploadImage(dA.name, { text: markup, halign: 'left', valign: 'top' });
+    await controllerB.generateAndUploadImage(dB.name, { text: markup, halign: 'left', valign: 'top' });
+    expect(capturedA).not.toBeNull();
+    expect(capturedB).not.toBeNull();
+    const outA = await Jimp.read(capturedA!);
+    const outB = await Jimp.read(capturedB!);
+    // compute centroids of red pixels in both images and assert rotated mapping holds
+  const redPoints = (img: any) => {
+      let sumX = 0; let sumY = 0; let n = 0;
+      for (let y = 0; y < 240; y++) {
+        for (let x = 0; x < 240; x++) {
+          const rgba = Jimp.intToRGBA(img.getPixelColor(x, y));
+          if (rgba.r > 200) { sumX += x; sumY += y; n++; }
+        }
+      }
+      if (n === 0) return null;
+      return { x: sumX / n, y: sumY / n };
+    };
+    const centroidA = redPoints(outA);
+    const centroidB = redPoints(outB);
+    expect(centroidA).not.toBeNull();
+    expect(centroidB).not.toBeNull();
+    const expectedBX = 239 - centroidA!.x;
+    const expectedBY = 239 - centroidA!.y;
+    expect(Math.abs(expectedBX - centroidB!.x)).toBeLessThan(4);
+    expect(Math.abs(expectedBY - centroidB!.y)).toBeLessThan(4);
+    controllerA.imageUploader = undefined; controllerB.imageUploader = undefined;
+    controllerA.sendGetFn = undefined; controllerB.sendGetFn = undefined;
+  });
+
   test('IMAGE upload publishes status events', async () => {
     const controller = new DeviceController([device], { afterCommand: false });
     const statusSpy = jest.fn().mockResolvedValue(undefined as any);

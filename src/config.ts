@@ -22,7 +22,7 @@ export function loadConfig(filePath?: string): ConfigSchema {
   let devices: Device[] = [];
   if (Array.isArray(parsed.devices)) {
     // validate array shape (each item must have a name, host, type)
-    devices = parsed.devices.map((d: any) => {
+  devices = parsed.devices.map((d: any) => {
   const hostVal = d?.host;
   const pollingVal = d?.polling !== undefined ? Number(d.polling) : undefined;
       if (!d || !d.name || !hostVal || !d.type) {
@@ -31,11 +31,26 @@ export function loadConfig(filePath?: string): ConfigSchema {
       if (pollingVal !== undefined && (!Number.isFinite(pollingVal) || Number(pollingVal) < 0)) {
         throw new Error('Invalid devices array: polling must be a non-negative number');
       }
-      return { name: d.name, type: d.type, host: hostVal, polling: pollingVal !== undefined ? Number(pollingVal) : undefined } as Device;
+      // Preserve image-related config when present
+      let imageCfg = d.image !== undefined ? d.image : undefined;
+      if (imageCfg) {
+        // Ensure flip vertical/horizontal are booleans when present
+        if (imageCfg.flip) {
+          imageCfg.flip.vertical = imageCfg.flip.vertical === true;
+          imageCfg.flip.horizontal = imageCfg.flip.horizontal === true;
+        }
+        // Normalize rotation to one of allowed values
+        if (imageCfg.rotate !== undefined) {
+          const r = Number(imageCfg.rotate);
+          const allowed = [0, 90, 180, 270];
+          imageCfg.rotate = allowed.includes(r) ? r : 0;
+        }
+      }
+      return { name: d.name, type: d.type, host: hostVal, polling: pollingVal !== undefined ? Number(pollingVal) : undefined, image: imageCfg } as Device;
     });
   } else if (typeof parsed.devices === 'object') {
     // Map keyed object: { "lounge-tv": { type: 'smalltv-ultra', host: '1.2.3.4' } }
-    devices = Object.entries(parsed.devices).map(([name, value]: [string, any]) => {
+  devices = Object.entries(parsed.devices).map(([name, value]: [string, any]) => {
   const hostVal = value?.host;
   const pollingVal = value?.polling !== undefined ? Number(value.polling) : undefined;
       if (!value || !hostVal || !value.type) {
@@ -44,7 +59,20 @@ export function loadConfig(filePath?: string): ConfigSchema {
       if (pollingVal !== undefined && (!Number.isFinite(pollingVal) || Number(pollingVal) < 0)) {
         throw new Error(`Invalid devices mapping: device ${name} polling must be a non-negative number`);
       }
-      return { name, type: value.type, host: hostVal, polling: pollingVal !== undefined ? Number(pollingVal) : undefined } as Device;
+      // Preserve image block from mapping form as well
+      let imageCfg = value.image !== undefined ? value.image : undefined;
+      if (imageCfg) {
+        if (imageCfg.flip) {
+          imageCfg.flip.vertical = imageCfg.flip.vertical === true;
+          imageCfg.flip.horizontal = imageCfg.flip.horizontal === true;
+        }
+        if (imageCfg.rotate !== undefined) {
+          const r = Number(imageCfg.rotate);
+          const allowed = [0, 90, 180, 270];
+          imageCfg.rotate = allowed.includes(r) ? r : 0;
+        }
+      }
+      return { name, type: value.type, host: hostVal, polling: pollingVal !== undefined ? Number(pollingVal) : undefined, image: imageCfg } as Device;
     });
   } else {
     throw new Error('Invalid configuration: devices must be an array or mapping');

@@ -55,6 +55,22 @@ describe('config loader', () => {
     expect(cfg.devices[0].host).toBe('192.168.1.50');
   });
 
+  test('parses mapping devices with image config preserved', () => {
+    const filePath = path.resolve(__dirname, 'fixtures', 'config-map-image.yaml');
+    const cfg = loadConfig(filePath);
+    expect(cfg.devices[0].image).toBeDefined();
+    expect(cfg.devices[0].image?.flip?.vertical).toBe(true);
+    expect(cfg.devices[0].image?.rotate).toBe(90);
+  });
+
+  test('parses array devices with image config preserved', () => {
+    const filePath = path.resolve(__dirname, 'fixtures', 'config-array-image.yaml');
+    const cfg = loadConfig(filePath);
+    expect(cfg.devices[0].image).toBeDefined();
+    expect(cfg.devices[0].image?.flip?.vertical).toBe(true);
+    expect(cfg.devices[0].image?.rotate).toBe(90);
+  });
+
   test('MQTT_PASSWORD env overrides YAML password', () => {
     const filePath = path.resolve(__dirname, 'fixtures', 'config-map.yaml');
     const original = process.env.MQTT_PASSWORD;

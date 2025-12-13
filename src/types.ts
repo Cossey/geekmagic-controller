@@ -17,6 +17,10 @@ export type Device = {
     selectionDelayMs?: number;
     selectionAttempts?: number;
     selectionInitialDelayMs?: number;
+    // Optional transformations applied to images before upload
+    flip?: { vertical?: boolean; horizontal?: boolean };
+    // rotation degrees; allowed values are 0, 90, 180, 270
+    rotate?: 0 | 90 | 180 | 270;
   };
 };
 

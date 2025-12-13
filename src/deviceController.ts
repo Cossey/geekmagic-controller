@@ -211,6 +211,18 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
   return { svg, usedFontSize: currentFontSize };
 }
 
+// Helper to apply rotate/flip transforms to a Sharp pipeline.
+function applyTransformsToSharp(sh: any, rotateDeg?: number, flipV?: boolean, flipH?: boolean) {
+  if (!sh) return sh;
+  const allowed = [0, 90, 180, 270];
+  if (typeof rotateDeg === 'number' && allowed.includes(rotateDeg) && rotateDeg !== 0) {
+    sh = sh.rotate(rotateDeg);
+  }
+  if (flipV) sh = sh.flip();
+  if (flipH) sh = sh.flop();
+  return sh;
+}
+
 export class DeviceController {
   devicesByName: Map<string, Device>;
   verifyOptions: any;
@@ -539,22 +551,34 @@ export class DeviceController {
       let finalExt = 'jpg';
       let finalMime = 'image/jpeg';
 
-      if (format === 'gif') {
+  // Determine requested image transforms from device configuration
+  const flipV = device.image && device.image.flip && device.image.flip.vertical === true;
+  const flipH = device.image && device.image.flip && device.image.flip.horizontal === true;
+  const rotateDeg = Number(device.image && typeof (device.image as any).rotate === 'number' ? (device.image as any).rotate : 0);
+  log('IMAGE/SET transforms', device.name, { rotateDeg, flipV, flipH });
+
+  if (format === 'gif') {
         const w = meta.width || 0;
         const h = meta.height || 0;
-        if (w === finalSize && h === finalSize) {
-          // already the right size — upload GIF as-is
+        if (w === finalSize && h === finalSize && !flipV && !flipH && (!rotateDeg || rotateDeg === 0)) {
+          // already the right size and no transforms requested — upload GIF as-is
           finalBuffer = buffer;
+          finalExt = 'gif';
+          finalMime = 'image/gif';
+        } else if (w === finalSize && h === finalSize) {
+          // already 240x240 but transforms requested — apply them, preserve animation if present
+          let s = sharp(buffer, { animated: true });
+          s = applyTransformsToSharp(s, rotateDeg, flipV, flipH);
+          finalBuffer = await s.gif().toBuffer();
           finalExt = 'gif';
           finalMime = 'image/gif';
         } else {
           // Resize/crop while preserving animation using sharp's animated pipeline
           const fit = oversize === 'crop' ? 'cover' : 'contain';
           const position = mapPosition(cropposition) as any;
-          finalBuffer = await sharp(buffer, { animated: true })
-            .resize(finalSize, finalSize, { fit: fit as any, position, background: { r: 255, g: 255, b: 255, alpha: 1 } })
-            .gif()
-            .toBuffer();
+          let s = sharp(buffer, { animated: true }).resize(finalSize, finalSize, { fit: fit as any, position, background: { r: 255, g: 255, b: 255, alpha: 1 } });
+          s = applyTransformsToSharp(s, rotateDeg, flipV, flipH);
+          finalBuffer = await s.gif().toBuffer();
           finalExt = 'gif';
           finalMime = 'image/gif';
         }
@@ -563,7 +587,7 @@ export class DeviceController {
         // compute an explicit extract region to match the Jimp-based crop behavior exactly.
         const w = meta.width || 0;
         const h = meta.height || 0;
-        if (oversize === 'crop' && (w > finalSize || h > finalSize) && w >= finalSize && h >= finalSize) {
+  if (oversize === 'crop' && (w > finalSize || h > finalSize) && w >= finalSize && h >= finalSize) {
           // compute left/top based on cropposition
           let left = 0;
           let top = 0;
@@ -589,16 +613,14 @@ export class DeviceController {
             default:
               left = horizontalCenter; top = verticalCenter; break;
           }
-          finalBuffer = await sharp(buffer)
-            .extract({ left, top, width: finalSize, height: finalSize })
-            .jpeg({ quality: 90 })
-            .toBuffer();
+          let s = sharp(buffer).extract({ left, top, width: finalSize, height: finalSize });
+          s = applyTransformsToSharp(s, rotateDeg, flipV, flipH);
+          finalBuffer = await s.jpeg({ quality: 90 }).toBuffer();
         } else {
           const position = mapPosition(cropposition) as any;
-          finalBuffer = await sharp(buffer)
-            .resize(finalSize, finalSize, { fit: 'contain', position, background: { r: 255, g: 255, b: 255, alpha: 1 } })
-            .jpeg({ quality: 90 })
-            .toBuffer();
+          let s = sharp(buffer).resize(finalSize, finalSize, { fit: 'contain', position, background: { r: 255, g: 255, b: 255, alpha: 1 } });
+          s = applyTransformsToSharp(s, rotateDeg, flipV, flipH);
+          finalBuffer = await s.jpeg({ quality: 90 }).toBuffer();
         }
         finalExt = 'jpg';
         finalMime = 'image/jpeg';
@@ -836,10 +858,16 @@ export class DeviceController {
     const currentFontSize = usedFontSize;
 
     try {
-  log('IMAGE/GENERATE rendering SVG', device.name, 'svgLen', Buffer.byteLength(svg), 'fontSize', currentFontSize);
-  await this.publishImageStatus(device.name, { stage: 'rendering', textLen: String(text).length });
-      // render SVG to JPEG buffer
-      const outBuf = await sharp(Buffer.from(svg)).resize(240, 240).jpeg({ quality: 90 }).toBuffer();
+    log('IMAGE/GENERATE rendering SVG', device.name, 'svgLen', Buffer.byteLength(svg), 'fontSize', currentFontSize);
+    await this.publishImageStatus(device.name, { stage: 'rendering', textLen: String(text).length });
+      // render SVG to JPEG buffer with any device-specified transforms
+    const flipV = device.image && device.image.flip && device.image.flip.vertical === true;
+    const flipH = device.image && device.image.flip && device.image.flip.horizontal === true;
+  const rotateDeg = Number((device.image && typeof (device.image as any).rotate === 'number') ? (device.image as any).rotate : 0);
+  log('IMAGE/GENERATE transforms', device.name, { rotateDeg, flipV, flipH });
+      let s = sharp(Buffer.from(svg)).resize(240, 240);
+      s = applyTransformsToSharp(s, rotateDeg, flipV, flipH);
+      const outBuf = await s.jpeg({ quality: 90 }).toBuffer();
       log('IMAGE/GENERATE rendered', device.name, 'bytes', outBuf.length);
       // upload like processImageAndUpload: use jpg
       const uploadUrl = `http://${device.host}/doUpload?dir=/image/`;

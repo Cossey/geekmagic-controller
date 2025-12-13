@@ -135,9 +135,15 @@ devices:
     image:
       oversize: crop        # crop | resize  (default: resize)
       cropposition: topright # top|left|bottom|right|topleft|topright|bottomleft|bottomright|center (default: center)
+      flip:
+        vertical: false  # flip image vertically before upload
+        horizontal: false # flip image horizontally before upload
+      rotate: 0 # rotate degrees: 0, 90, 180, 270 (default 0)
 ```
 
 When `oversize: crop` the controller will extract a 240x240 section from the incoming image based on `cropposition` (for example `topright` will select the 240x240 square from the top-right corner). When `oversize: resize` the controller will scale the image to fit within a 240x240 box and pad as needed to produce an exact 240x240 final image.
+
+The `flip` and `rotate` options apply image transforms before the image is uploaded to the device. They affect both images uploaded directly via `IMAGE/SET` and images generated via `IMAGE/GENERATE`. For GIFs, animation is preserved when possible by the Sharp pipeline.
 
 Note on device upload quirks:
 
@@ -158,8 +164,7 @@ You can programmatically generate a 240×240 image and upload it to the device b
 Payloads supported:
 
 - Plain string: treated as the text to render.
-- JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom" }` (all fields optional)
- - JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom", "hmargin": 0, "vmargin": 0 }` (all fields optional)
+- JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom", "hmargin": 0, "vmargin": 0 }` (all fields optional)
 
 Markup supported in the `text` string:
 
@@ -171,8 +176,8 @@ Markup supported in the `text` string:
 
 - `halign` - Horizontal alignment for text and inline images (default `center`). Values: `left`, `center`, `right`.
 - `valign` - Vertical alignment within the 240×240 image (default `center`). Values: `top`, `center`, `bottom`.
- - `hmargin` - Optional integer (pixels) specifying the horizontal margin relative to the chosen `halign` anchor. When `halign=left`, this is the number of pixels from the left edge; when `halign=right`, this is the number of pixels from the right edge; when `halign=center`, this is a pixel offset from the image center (positive moves right).
- - `vmargin` - Optional integer (pixels) specifying the vertical margin relative to the chosen `valign` anchor. When `valign=top`, this is the number of pixels from the top edge; when `valign=bottom`, this is the number of pixels from the bottom edge; when `valign=center`, this is a pixel offset from the vertical center (positive moves down).
+- `hmargin` - Optional integer (pixels) specifying the horizontal margin relative to the chosen `halign` anchor. When `halign=left`, this is the number of pixels from the left edge; when `halign=right`, this is the number of pixels from the right edge; when `halign=center`, this is a pixel offset from the image center (positive moves right).
+- `vmargin` - Optional integer (pixels) specifying the vertical margin relative to the chosen `valign` anchor. When `valign=top`, this is the number of pixels from the top edge; when `valign=bottom`, this is the number of pixels from the bottom edge; when `valign=center`, this is a pixel offset from the vertical center (positive moves down).
 
 - Multiple spaces are preserved in generated text (the renderer sets xml:space="preserve" so `A  B` keeps two spaces).
 
