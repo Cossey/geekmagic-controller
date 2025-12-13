@@ -159,6 +159,7 @@ Payloads supported:
 
 - Plain string: treated as the text to render.
 - JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom" }` (all fields optional)
+ - JSON object: `{ "text": "...", "background": "#000000", "textColor": "#ffffff", "fontSize": 28, "halign": "left|center|right", "valign": "top|center|bottom", "hmargin": 0, "vmargin": 0 }` (all fields optional)
 
 Markup supported in the `text` string:
 
@@ -170,6 +171,8 @@ Markup supported in the `text` string:
 
 - `halign` - Horizontal alignment for text and inline images (default `center`). Values: `left`, `center`, `right`.
 - `valign` - Vertical alignment within the 240×240 image (default `center`). Values: `top`, `center`, `bottom`.
+ - `hmargin` - Optional integer (pixels) specifying the horizontal margin relative to the chosen `halign` anchor. When `halign=left`, this is the number of pixels from the left edge; when `halign=right`, this is the number of pixels from the right edge; when `halign=center`, this is a pixel offset from the image center (positive moves right).
+ - `vmargin` - Optional integer (pixels) specifying the vertical margin relative to the chosen `valign` anchor. When `valign=top`, this is the number of pixels from the top edge; when `valign=bottom`, this is the number of pixels from the bottom edge; when `valign=center`, this is a pixel offset from the vertical center (positive moves down).
 
 - Multiple spaces are preserved in generated text (the renderer sets xml:space="preserve" so `A  B` keeps two spaces).
 
@@ -208,6 +211,18 @@ Example with left/top alignment:
 
 ```powershell
 mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Left aligned", "halign":"left", "valign":"top"}'
+```
+
+Example with left/top alignment and margins:
+
+```bash
+mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Left aligned", "halign":"left", "valign":"top", "hmargin":12, "vmargin":8 }'
+```
+
+Example with center alignment and offsets:
+
+```bash
+mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Centered with offset", "halign":"center", "valign":"center", "hmargin":10, "vmargin":15 }'
 ```
 
 Tip: if sending large data URIs inside MQTT messages, consider using a JSON payload and single-quoting the whole message on shells that support it so you don't need to escape inner double quotes.

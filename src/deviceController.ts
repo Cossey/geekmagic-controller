@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { log, warn } from './logger';
 
 // Build a 240x240 SVG from the markup text. This is exported so tests can assert layout
-export function buildSvgForText(text: string, bg: string, defaultTextColor: string, fontSize: number, options?: { halign?: 'left' | 'center' | 'right'; valign?: 'top' | 'center' | 'bottom' }) {
+export function buildSvgForText(text: string, bg: string, defaultTextColor: string, fontSize: number, options?: { halign?: 'left' | 'center' | 'right'; valign?: 'top' | 'center' | 'bottom'; hmargin?: number; vmargin?: number }) {
   // parse blocks and markup (images, color, bold, italic). This mirrors the code used by
   // generateAndUploadImage but is separated out for testability and clearer newline handling.
   const imgTagRe = /\[img:([^\]]+)\]/gi;
@@ -118,6 +118,7 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
       if (curLine.length > 0) lines.push({ type: 'text', spans: curLine });
     }
     const lineHeight = Math.round(fSize * 1.2);
+    const baselineOffset = lineHeight - (lineHeight / 4);
     let totalH = 0;
     for (const l of lines) {
       if (l.type === 'text') totalH += lineHeight;
@@ -135,18 +136,26 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
 
   // Build SVG string
   const { lines, lineHeight } = layout;
-  // alignment defaults
+  const baselineOffset = lineHeight - (lineHeight / 4);
+  // alignment defaults and margins
   const halign = (options && options.halign) || 'center';
   const valign = (options && options.valign) || 'center';
+  // margins: integer pixels; if undefined we preserve existing default behavior
+  const hmarginOpt = options && typeof options.hmargin === 'number' ? Math.trunc(options.hmargin) : undefined;
+  const vmarginOpt = options && typeof options.vmargin === 'number' ? Math.trunc(options.vmargin) : undefined;
   // Compute starting Y based on vertical alignment
   const minTop = 12;
   let y: number;
   if (valign === 'top') {
-    y = Math.max(minTop, 0) + lineHeight - (lineHeight / 4);
+    const vm = typeof vmarginOpt === 'number' ? vmarginOpt : minTop;
+    y = vm + baselineOffset;
   } else if (valign === 'bottom') {
-    y = Math.round(SVG_HEIGHT - layout.totalH) + lineHeight - (lineHeight / 4);
+    const vm = typeof vmarginOpt === 'number' ? vmarginOpt : 0;
+    y = Math.round(SVG_HEIGHT - vm - layout.totalH) + baselineOffset;
   } else {
-    y = Math.max(minTop, Math.round((SVG_HEIGHT - layout.totalH) / 2) + lineHeight - (lineHeight / 4));
+    const centerBase = Math.round((SVG_HEIGHT - layout.totalH) / 2) + baselineOffset;
+    const vm = typeof vmarginOpt === 'number' ? vmarginOpt : 0;
+    y = Math.max(minTop, centerBase + vm);
   }
   const svgParts: string[] = [];
   svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_WIDTH}" height="${SVG_HEIGHT}">`);
@@ -155,11 +164,12 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
   for (const l of lines) {
     if (l.type === 'image') {
       const imgSize = 96;
-      const margin = 4;
+      const defaultMargin = 4;
+      const imgMargin = typeof hmarginOpt === 'number' ? hmarginOpt : defaultMargin;
       let x: number;
-      if (halign === 'left') x = margin;
-      else if (halign === 'right') x = Math.round(SVG_WIDTH - imgSize - margin);
-      else x = Math.round((SVG_WIDTH - imgSize) / 2);
+      if (halign === 'left') x = imgMargin;
+      else if (halign === 'right') x = Math.round(SVG_WIDTH - imgSize - imgMargin);
+      else x = Math.round((SVG_WIDTH - imgSize) / 2 + (typeof hmarginOpt === 'number' ? hmarginOpt : 0));
       const yImg = Math.round(y - imgSize / 2);
       const src = l.src;
       svgParts.push(`<image x="${x}" y="${yImg}" width="${imgSize}" height="${imgSize}" href="${src}" />`);
@@ -176,15 +186,20 @@ export function buildSvgForText(text: string, bg: string, defaultTextColor: stri
       // xml:space="preserve" keeps multiple spaces from collapsing
       // xml:space="preserve" keeps multiple spaces from collapsing
       // choose x & anchor based on horizontal alignment
-      const margin = 4;
+      const defaultMargin = 4;
+      const margin = typeof hmarginOpt === 'number' ? hmarginOpt : defaultMargin;
       let xVal: number | string = SVG_WIDTH / 2;
       let anchor = 'middle';
       if (halign === 'left') {
+        // left margin: distance from left edge
         xVal = margin;
         anchor = 'start';
       } else if (halign === 'right') {
+        // right margin: distance from right edge
         xVal = SVG_WIDTH - margin;
         anchor = 'end';
+      } else if (halign === 'center' && typeof hmarginOpt === 'number') {
+        xVal = Math.round(SVG_WIDTH / 2 + hmarginOpt);
       }
   svgParts.push(`<text xml:space="preserve" x="${xVal}" y="${y}" font-family="DejaVu Sans, Arial, sans-serif" font-size="${currentFontSize}" text-anchor="${anchor}">${tspanParts}</text>`);
       y += lineHeight;
@@ -794,6 +809,17 @@ export class DeviceController {
         const vv = String(payload.valign).toLowerCase();
         if (vv === 'top' || vv === 'center' || vv === 'bottom') valign = vv as any;
       }
+      // parse optional integer margins for horizontal/vertical
+      var hmargin: number | undefined = undefined;
+      var vmargin: number | undefined = undefined;
+      if (payload.hmargin !== undefined && payload.hmargin !== null) {
+        const hm = Number(payload.hmargin);
+        if (!Number.isNaN(hm)) hmargin = Math.trunc(hm);
+      }
+      if (payload.vmargin !== undefined && payload.vmargin !== null) {
+        const vm = Number(payload.vmargin);
+        if (!Number.isNaN(vm)) vmargin = Math.trunc(vm);
+      }
     } else {
       text = String(payload || '');
     }
@@ -806,7 +832,7 @@ export class DeviceController {
     // Use shared helper to build SVG string (handles newline and space preservation)
     log('IMAGE/GENERATE requested', device.name, 'textLen', String(text).length, 'background', bg, 'textColor', defaultTextColor, 'fontSize', fontSize);
   const devmod = await import('./deviceController');
-  const { svg, usedFontSize } = (devmod as any).buildSvgForText(text, bg, defaultTextColor, fontSize, { halign, valign });
+  const { svg, usedFontSize } = (devmod as any).buildSvgForText(text, bg, defaultTextColor, fontSize, { halign, valign, hmargin, vmargin });
     const currentFontSize = usedFontSize;
 
     try {

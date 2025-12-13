@@ -483,6 +483,46 @@ describe('DeviceController IMAGE handling', () => {
     expect(svgObj.svg.includes('font-family="DejaVu Sans, Arial, sans-serif"')).toBeTruthy();
   });
 
+  test('buildSvgForText halign left/right/center respects hmargin', () => {
+    const left = buildSvgForText('Left', '#000000', '#ffffff', 28, { halign: 'left', hmargin: 12 });
+    expect(left.svg.includes('text-anchor="start"')).toBeTruthy();
+    expect(left.svg.includes('x="12"')).toBeTruthy();
+
+    const right = buildSvgForText('Right', '#000000', '#ffffff', 28, { halign: 'right', hmargin: 18 });
+    expect(right.svg.includes('text-anchor="end"')).toBeTruthy();
+    expect(right.svg.includes('x="222"')).toBeTruthy(); // 240 - 18 = 222
+
+    const center = buildSvgForText('Center', '#000000', '#ffffff', 28, { halign: 'center', hmargin: 10 });
+    // center x is 120 + hmargin
+    expect(center.svg.includes('x="130"')).toBeTruthy();
+  });
+
+  test('buildSvgForText valign top/center/bottom respects vmargin (differences)', () => {
+    const top1 = buildSvgForText('A', '#000000', '#ffffff', 28, { valign: 'top', vmargin: 20 });
+    const top2 = buildSvgForText('A', '#000000', '#ffffff', 28, { valign: 'top', vmargin: 30 });
+    const re = /<text[^>]* y="([0-9.]+)"/g;
+    const y1 = Number(re.exec(top1.svg)?.[1] || '0');
+    re.lastIndex = 0;
+    const y2 = Number(re.exec(top2.svg)?.[1] || '0');
+    expect(Math.round(y2 - y1)).toBe(10);
+
+    const center1 = buildSvgForText('B', '#000000', '#ffffff', 28, { valign: 'center', vmargin: 5 });
+    const center2 = buildSvgForText('B', '#000000', '#ffffff', 28, { valign: 'center', vmargin: 15 });
+    const reC = /<text[^>]* y="([0-9.]+)"/g;
+    const cy1 = Number(reC.exec(center1.svg)?.[1] || '0');
+    reC.lastIndex = 0;
+    const cy2 = Number(reC.exec(center2.svg)?.[1] || '0');
+    expect(Math.round(cy2 - cy1)).toBe(10);
+
+    const bottom1 = buildSvgForText('C', '#000000', '#ffffff', 28, { valign: 'bottom', vmargin: 8 });
+    const bottom2 = buildSvgForText('C', '#000000', '#ffffff', 28, { valign: 'bottom', vmargin: 18 });
+    const reB = /<text[^>]* y="([0-9.]+)"/g;
+    const by1 = Number(reB.exec(bottom1.svg)?.[1] || '0');
+    reB.lastIndex = 0;
+    const by2 = Number(reB.exec(bottom2.svg)?.[1] || '0');
+  expect(Math.round(by2 - by1)).toBe(-10); // increasing bottom margin should move the baseline upward by 10 (negative shift)
+  });
+
   test('generateAndUploadImage passes halign/valign to buildSvgForText', async () => {
     const devmod = await import('../deviceController');
     const controller = new devmod.default([device], { afterCommand: false });
@@ -490,11 +530,14 @@ describe('DeviceController IMAGE handling', () => {
     controller.imageUploader = uploadMock;
     const spy = jest.spyOn(devmod, 'buildSvgForText');
     controller.sendGetFn = jest.fn().mockResolvedValue({ status: 200 } as any);
-    await controller.generateAndUploadImage(device.name, { text: 'Test', halign: 'left', valign: 'top' });
+  await controller.generateAndUploadImage(device.name, { text: 'Test', halign: 'left', valign: 'top', hmargin: 12, vmargin: 6 });
     expect(spy).toHaveBeenCalled();
     const args = spy.mock.calls[spy.mock.calls.length - 1];
     expect(args[0]).toBe('Test');
-    expect(args[4]).toEqual({ halign: 'left', valign: 'top' });
+  expect(args[4]).toEqual(expect.objectContaining({ halign: 'left', valign: 'top' }));
+  // margins are present in the options argument
+  expect((args[4] as any).hmargin).toBe(12);
+  expect((args[4] as any).vmargin).toBe(6);
     spy.mockRestore();
     controller.imageUploader = undefined;
     controller.sendGetFn = undefined;
