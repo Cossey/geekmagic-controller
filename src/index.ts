@@ -19,11 +19,18 @@ async function main() {
     });
     // Start periodic polling after MQTT connects so retained state is published over a connected client.
     mqtt.onConnect(() => controller.startStatePolling());
-    process.on('SIGINT', () => {
-      log('SIGINT received - exiting');
+    const shutdown = async (sig: string) => {
+      log(sig, 'received - shutting down');
       controller.stopStatePolling();
+      try {
+        await mqtt.stop();
+      } catch (e: any) {
+        warn('Error while shutting down mqtt', e?.message || e);
+      }
       process.exit(0);
-    });
+    };
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
   } catch (err: any) {
     warn('Failed to start controller', err?.message || err);
     process.exit(1);

@@ -212,6 +212,15 @@ mosquitto_pub -h 127.0.0.1 -t gm/lounge-tv/IMAGE/GENERATE -m '{"text":"Left alig
 
 Tip: if sending large data URIs inside MQTT messages, consider using a JSON payload and single-quoting the whole message on shells that support it so you don't need to escape inner double quotes.
 
+### Controller status topic (LWT)
+
+The controller publishes a retained LWT status message to `<basetopic>/STATUS` (default `gm/STATUS`). The message is:
+
+- `ONLINE` (retained) — published by the controller when it successfully connects to the broker.
+- `OFFLINE` (retained) — published by the broker if the controller disconnects unexpectedly (LWT), and also published by the controller on graceful shutdown.
+
+This topic is useful for monitoring and for tools and automations which need to know whether the controller is currently connected to the MQTT broker.
+
 See `src/deviceController.ts` → `generateAndUploadImage` for the exact implementation details if you need to understand parsing/limitations.
 
 State topics are read-only. Sending commands is only supported on the SET subtopic, e.g. `gm/<device>/BRIGHTNESS/SET` or `gm/<device>/THEME/SET`.

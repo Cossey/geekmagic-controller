@@ -7,10 +7,19 @@ export class MqttService {
   client: mqtt.MqttClient | null = null;
   cfg: MQTTConfig;
   controller: DeviceController;
+  // Optional connect function for test injection
+  connectFn?: (url: string, options: mqtt.IClientOptions) => mqtt.MqttClient;
 
-  constructor(cfg: MQTTConfig, controller: DeviceController) {
+  constructor(cfg: MQTTConfig, controller: DeviceController, connectFn?: (url: string, options: mqtt.IClientOptions) => mqtt.MqttClient) {
     this.cfg = cfg;
     this.controller = controller;
+    this.connectFn = connectFn;
+  }
+
+  private getStatusTopic(): string {
+    const raw = String(this.cfg.basetopic || 'gm');
+    const base = raw.replace(/^\/+|\/+$/g, ''); // remove leading/trailing slashes
+    return `${base}/STATUS`;
   }
 
   start() {
@@ -21,8 +30,18 @@ export class MqttService {
       password: this.cfg.password,
       reconnectPeriod: 5000
     };
+    // Add Last Will and Testament: if this client disconnects unexpectedly, the broker
+    // should publish OFFLINE to /<basetopic>/STATUS as retained so subscribers know the
+    // controller is offline.
+    options.will = {
+      topic: this.getStatusTopic(),
+      payload: 'OFFLINE',
+      qos: 0,
+      retain: true,
+    };
     log('Connecting to MQTT', url);
-    this.client = mqtt.connect(url, options);
+  const connectToUse = this.connectFn ?? mqtt.connect;
+  this.client = connectToUse(url, options);
     this.client.on('connect', () => {
       log('MQTT connected');
   // Only subscribe to item-level SET and COMMAND subtopics to avoid interpreting state topics as commands.
@@ -37,6 +56,8 @@ export class MqttService {
         }
         log('MQTT subscribed', granted?.map(g => g.topic).join(', '));
       });
+  // Publish retained ONLINE status after successful connect
+  this.publish(this.getStatusTopic(), 'ONLINE', { retain: true }).catch((err) => warn('Failed to publish ONLINE status', err?.message || err));
     });
 
     this.client.on('message', (topic: string, message: Buffer) => {
@@ -47,6 +68,27 @@ export class MqttService {
     this.client.on('error', (err: Error) => {
       warn('MQTT error', err?.message || err);
     });
+    // When the client closes, ensure we log; LWT is used to mark the broker-side offline
+    // state in the event of unexpected disconnects, but we also log locally on close.
+    this.client.on('close', () => log('MQTT connection closed'));
+  }
+
+  // Gracefully stop the mqtt client and publish OFFLINE retained status when possible
+  async stop(): Promise<void> {
+    if (!this.client) return;
+    try {
+  await this.publish(this.getStatusTopic(), 'OFFLINE', { retain: true });
+    } catch (err: any) {
+      // Ignore publish errors but log
+      warn('Failed to publish OFFLINE status', err?.message || err);
+    }
+    try {
+      // close the connection cleanly
+      this.client.end();
+    } catch (err: any) {
+      // ignore and log
+      warn('Error ending MQTT client', err?.message || err);
+    }
   }
 
   // Allow external code to register a connect handler
