@@ -17,6 +17,11 @@ async function main() {
       const topic = `${cfg.mqtt.basetopic}/${deviceName}/IMAGE/STATUS`;
       await mqtt.publish(topic, payload, { retain });
     });
+    // Status publisher: gm/<device>/STATUS — publish retained ONLINE/OFFLINE messages per device
+    controller.setStatusPublisher(async (deviceName: string, payload: string, retain = true) => {
+      const topic = `${cfg.mqtt.basetopic}/${deviceName}/STATUS`;
+      await mqtt.publish(topic, payload, { retain });
+    });
     // Start periodic polling after MQTT connects so retained state is published over a connected client.
     mqtt.onConnect(() => controller.startStatePolling());
     const shutdown = async (sig: string) => {

@@ -84,4 +84,15 @@ describe('DeviceController verifyCommand', () => {
     expect(publishSpy).toHaveBeenCalledWith(device.name, { dst: 0 }, true);
     spy.mockRestore();
   });
+
+  test('verifyCommand sets device OFFLINE on HTTP error', async () => {
+    const controller = new DeviceController([device], { afterCommand: true, retries: 1, initialDelayMs: 1, backoffMs: 1 });
+    const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+    controller.setStatusPublisher(statusSpy as any);
+    const spy = jest.spyOn(httpClient, 'getJson').mockResolvedValue(null as any);
+    const ok = await controller.verifyCommand(device as any, 'BRIGHTNESS', 55);
+    expect(ok).toBe(false);
+    expect(statusSpy).toHaveBeenCalledWith(device.name, 'OFFLINE', true);
+    spy.mockRestore();
+  });
 });

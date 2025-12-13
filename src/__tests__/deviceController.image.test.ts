@@ -264,6 +264,21 @@ describe('DeviceController IMAGE handling', () => {
     controller.sendGetFn = undefined;
   });
 
+  test('generate marks device OFFLINE when selection fails', async () => {
+    const controller = new DeviceController([device], { afterCommand: false });
+    const uploadMock = jest.fn().mockResolvedValue(true);
+    controller.imageUploader = uploadMock;
+    const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+    controller.setStatusPublisher(statusSpy as any);
+    controller.sendGetFn = jest.fn().mockResolvedValue(null as any);
+
+    const ok = await controller.generateAndUploadImage(device.name, { text: 'Hello offline' });
+    expect(ok).toBe(false);
+    expect(statusSpy).toHaveBeenCalledWith(device.name, 'OFFLINE', true);
+    controller.imageUploader = undefined;
+    controller.sendGetFn = undefined;
+  });
+
   test('generate image falls back to unencoded path when encoded fails', async () => {
     const controller = new DeviceController([device], { afterCommand: false });
     const uploadMock = jest.fn().mockResolvedValue(true);

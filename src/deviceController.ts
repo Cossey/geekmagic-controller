@@ -208,6 +208,10 @@ export class DeviceController {
   imageUploader?: (device: Device, buf: Buffer, filename: string, contentType: string) => Promise<boolean>;
   // Optional override for HTTP GET requests (used in tests for image flow)
   sendGetFn?: (url: string) => Promise<any>;
+  // Optional publisher for per-device status messages (e.g., `gm/<device>/STATUS`)
+  statusPublisher?: (deviceName: string, payload: string, retain?: boolean) => Promise<void>;
+  // Cache the last published status per-device to avoid duplicate publishes
+  deviceStatuses: Map<string, 'ONLINE'|'OFFLINE'> = new Map();
 
   constructor(devices: Device[], verifyOptions?: any) {
     this.devicesByName = new Map(devices.map((d) => [d.name, d]));
@@ -303,6 +307,10 @@ export class DeviceController {
     this.imageStatusPublisher = p;
   }
 
+  setStatusPublisher(p: (deviceName: string, payload: string, retain?: boolean) => Promise<void>) {
+    this.statusPublisher = p;
+  }
+
   private async publishImageStatus(deviceName: string, payload: any, retain = true): Promise<void> {
     if (!this.imageStatusPublisher) return;
     try {
@@ -310,6 +318,19 @@ export class DeviceController {
       await this.imageStatusPublisher(deviceName, pl, retain);
     } catch (err: any) {
       warn('Failed to publish IMAGE/STATUS', deviceName, err?.message || err);
+    }
+  }
+
+  // Publish a device-level status (ONLINE/OFFLINE). Only publish when the value changed or when forced.
+  private async maybePublishDeviceStatus(deviceName: string, payload: 'ONLINE'|'OFFLINE', forcePublish = false) {
+    if (!this.statusPublisher) return;
+    const prev = this.deviceStatuses.get(deviceName);
+    if (!forcePublish && prev === payload) return;
+    try {
+      await this.statusPublisher(deviceName, payload, true);
+      this.deviceStatuses.set(deviceName, payload);
+    } catch (err: any) {
+      warn('Failed to publish device status', deviceName, err?.message || err);
     }
   }
 
@@ -404,14 +425,19 @@ export class DeviceController {
 
     let attempt = 0;
     let delay = initialDelay;
-    while (attempt < retries) {
+  while (attempt < retries) {
       attempt++;
-      try {
+  try {
   const url = `http://${host}/${file}`;
   const data = await httpClient.getJson(url);
+        if (data === null) {
+          // fetching JSON failed - mark device offline and retry; continue attempts
+          warn('Verification fetch returned null (possible HTTP error)', command, 'for', device.name);
+          await this.maybePublishDeviceStatus(device.name, 'OFFLINE');
+        }
         if (data && typeof data === 'object') {
           const current = data[key];
-          if (Number(current) === expected) {
+            if (Number(current) === expected) {
             log('Verification matched', command, 'for', device.name, expected);
             // update cached state and publish
             const partial: { brt?: number; theme?: number; colon?: number; hour12?: number; dst?: number } = {};
@@ -426,6 +452,8 @@ export class DeviceController {
         }
       } catch (err: any) {
         warn('Verification fetch error', err?.message || err);
+        // mark device offline when verification fetch errors occur
+        try { await this.maybePublishDeviceStatus(device.name, 'OFFLINE', true); } catch (_) { /* ignore */ }
       }
       // wait for delay (unref the timer so it doesn't keep the process alive)
       // eslint-disable-next-line no-await-in-loop
@@ -584,10 +612,18 @@ export class DeviceController {
       } else {
         if (sel.themeOk) this.maybePublishState(device.name, { theme: 3 });
       }
+      // Set per-device status depending on whether the device accepted our change
+      if (sel.themeOk || sel.imgSelected) {
+        await this.maybePublishDeviceStatus(device.name, 'ONLINE');
+      } else {
+        await this.maybePublishDeviceStatus(device.name, 'OFFLINE');
+      }
       return sel.themeOk || sel.imgSelected;
     } catch (err: any) {
       warn('Image processing/upload failed', err?.message || err);
       await this.publishImageStatus(device.name, { stage: 'error', message: err?.message || err });
+      // On errors, mark the device as offline
+      await this.maybePublishDeviceStatus(device.name, 'OFFLINE');
       return false;
     }
   }
@@ -613,6 +649,8 @@ export class DeviceController {
             if (ok) {
               log('IMAGE/GENERATE', description, 'OK', device.name, `status:${(res as any).status}`);
               return true;
+              // Device successfully verified - mark as ONLINE
+              await this.maybePublishDeviceStatus(device.name, 'ONLINE');
             }
             const status = res && (res as any).status ? (res as any).status : undefined;
             let snippet = '';
@@ -883,10 +921,18 @@ export class DeviceController {
           await this.publishImageStatus(device.name, { stage: 'error', message: 'set theme did not return success and verification failed' });
         }
       }
+      // Set per-device status depending on whether the device accepted our change
+      if (themeOk || sel.imgSelected) {
+        await this.maybePublishDeviceStatus(device.name, 'ONLINE');
+      } else {
+        await this.maybePublishDeviceStatus(device.name, 'OFFLINE');
+      }
       return themeOk || sel.imgSelected;
     } catch (err: any) {
       warn('IMAGE/GENERATE processing failed', err?.message || err);
       await this.publishImageStatus(device.name, { stage: 'error', message: err?.message || err });
+      // On processing error, mark the device offline
+      await this.maybePublishDeviceStatus(device.name, 'OFFLINE');
       return false;
     }
   }
@@ -975,8 +1021,14 @@ export class DeviceController {
       const merged = { ...defaults, ...partial };
       log('Loaded state for', device.name, merged);
       this.maybePublishState(device.name, merged, true);
+      // If any of the primary endpoints succeeded, mark the device as ONLINE; otherwise OFFLINE
+      const primaryOk = brtData !== null || appData !== null;
+      if (primaryOk) await this.maybePublishDeviceStatus(device.name, 'ONLINE');
+      else await this.maybePublishDeviceStatus(device.name, 'OFFLINE');
     } catch (err: any) {
       warn('Failed to load device state for', device.name, err?.message || err);
+      // On error, mark device offline
+      await this.maybePublishDeviceStatus(device.name, 'OFFLINE');
     }
   }
 

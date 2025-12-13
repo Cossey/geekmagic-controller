@@ -6,8 +6,10 @@ const device = { name: 'lounge-tv', type: 'smalltv-ultra', host: '192.168.1.50' 
 describe('DeviceController state load', () => {
   test('loads device state from brt.json and app.json', async () => {
     const controller = new DeviceController([device]);
-    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
-    controller.setMqttPublisher(publishSpy as any);
+  const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setMqttPublisher(publishSpy as any);
+  const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setStatusPublisher(statusSpy as any);
     const spy = jest.spyOn(httpClient, 'getJson').mockImplementation(async (url: string) => {
       if (url.endsWith('/brt.json')) return { brt: 55 };
       if (url.endsWith('/app.json')) return { theme: 3 };
@@ -26,6 +28,7 @@ describe('DeviceController state load', () => {
   expect(state?.hour12).toBe(0);
   expect(state?.dst).toBe(1);
   expect(publishSpy).toHaveBeenCalledWith(device.name, { brt: 55, theme: 3, colon: 1, hour12: 0, dst: 1 }, true);
+  expect(statusSpy).toHaveBeenCalledWith(device.name, 'ONLINE', true);
     spy.mockRestore();
   });
 
@@ -35,6 +38,8 @@ describe('DeviceController state load', () => {
   const controller = new (require('../deviceController').default)([d1, d2], { pollIntervalSeconds: 30 });
   const publishSpy = jest.fn().mockResolvedValue(undefined as any);
   controller.setMqttPublisher(publishSpy as any);
+  const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setStatusPublisher(statusSpy as any);
 
     const spyGetJson = jest.spyOn(require('../httpClient'), 'getJson').mockResolvedValue({ brt: 10, theme: 1 });
     const spySetInterval = jest.spyOn(global as any, 'setInterval');
@@ -55,8 +60,10 @@ describe('DeviceController state load', () => {
     const d1 = { name: 'tv1', type: 'smalltv-ultra', host: '192.168.1.50', polling: 1 };
     const d2 = { name: 'tv2', type: 'smalltv-ultra', host: '192.168.1.51', polling: 0 };
     const controller = new (require('../deviceController').default)([d1, d2], { pollIntervalSeconds: 30 });
-    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
-    controller.setMqttPublisher(publishSpy as any);
+  const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setMqttPublisher(publishSpy as any);
+  const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setStatusPublisher(statusSpy as any);
 
     const spyGetJson = jest.spyOn(require('../httpClient'), 'getJson').mockImplementation(async (url: any) => {
       if (url.endsWith('/brt.json')) return { brt: 10 };
@@ -103,8 +110,10 @@ describe('DeviceController state load', () => {
 
   test('publishes state changes across subsequent loads (colon example)', async () => {
     const controller = new (require('../deviceController').default)([device], {} as any);
-    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
-    controller.setMqttPublisher(publishSpy as any);
+  const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setMqttPublisher(publishSpy as any);
+  const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setStatusPublisher(statusSpy as any);
     let colonCalls = 0;
   const spy = jest.spyOn(require('../httpClient'), 'getJson').mockImplementation(async (url: any) => {
       if (url.endsWith('/brt.json')) return { brt: 10 };
@@ -132,8 +141,10 @@ describe('DeviceController state load', () => {
 
   test('loadDeviceState handles alternative JSON shapes', async () => {
     const controller = new (require('../deviceController').default)([device], {} as any);
-    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
-    controller.setMqttPublisher(publishSpy as any);
+  const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setMqttPublisher(publishSpy as any);
+  const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setStatusPublisher(statusSpy as any);
     const spy = jest.spyOn(require('../httpClient'), 'getJson').mockImplementation(async (url: any) => {
       if (url.endsWith('/brt.json')) return { value: 55 };
       if (url.endsWith('/app.json')) return { app: { theme: 4 } };
@@ -157,8 +168,10 @@ describe('DeviceController state load', () => {
 
   test('publishes defaults when keys missing (colon/dst/theme)', async () => {
     const controller = new (require('../deviceController').default)([device], {} as any);
-    const publishSpy = jest.fn().mockResolvedValue(undefined as any);
-    controller.setMqttPublisher(publishSpy as any);
+  const publishSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setMqttPublisher(publishSpy as any);
+  const statusSpy = jest.fn().mockResolvedValue(undefined as any);
+  controller.setStatusPublisher(statusSpy as any);
     const spy = jest.spyOn(require('../httpClient'), 'getJson').mockImplementation(async (url: any) => {
       if (url.endsWith('/brt.json')) return { brt: 80 };
       if (url.endsWith('/hour12.json')) return { h: 1 };
@@ -167,7 +180,8 @@ describe('DeviceController state load', () => {
     });
 
     await controller.loadDeviceState(device as any);
-    expect(publishSpy).toHaveBeenCalledWith(device.name, { brt: 80, theme: 1, colon: 0, hour12: 1, dst: 0 }, true);
+  expect(publishSpy).toHaveBeenCalledWith(device.name, { brt: 80, theme: 1, colon: 0, hour12: 1, dst: 0 }, true);
+  expect(statusSpy).toHaveBeenCalledWith(device.name, 'ONLINE', true);
     spy.mockRestore();
   });
 });
